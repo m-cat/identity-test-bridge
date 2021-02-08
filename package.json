@@ -4,6 +4,9 @@
   "description": "",
   "private": true,
   "scripts": {
+    "build": "rimraf dist && tsc --project tsconfig.build.json && npx webpack",
+    "lint:eslint": "eslint --ext .ts src --max-warnings 0",
+    "lint:tsc": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -16,10 +19,29 @@
     "url": "https://github.com/m-cat/identity-test-bridge/issues"
   },
   "homepage": "https://github.com/m-cat/identity-test-bridge#readme",
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged"
+    }
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx}": [
+      "eslint --ext .ts --fix",
+      "tsc --esModuleInterop --noemit",
+      "prettier --write"
+    ],
+    "*.{json,yml,md}": [
+      "prettier --write"
+    ]
+  },
   "dependencies": {
-    "postmate": "^1.5.2"
+    "penpal": "^5.3.0"
   },
   "devDependencies": {
+    "husky": "^4.3.8",
+    "lint-staged": "^10.5.4",
+    "prettier": "^2.2.1",
+    "typescript": "^4.1.3",
     "webpack": "^5.18.0",
     "webpack-cli": "^4.4.0"
   }
