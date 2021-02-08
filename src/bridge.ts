@@ -248,9 +248,6 @@ runRouter();
 
       // Destroy the iframe.
       iframe.parentNode.removeChild(iframe);
-
-      // Set the identity we received.
-      this.setIdentity("tester");
     });
   }
 
