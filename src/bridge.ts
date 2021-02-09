@@ -3,24 +3,26 @@ import { Connection, CallSender } from "penpal/lib/types";
 
 import { createIframe } from "./utils";
 
-type Interface = Record<string, Array<string>>;
+export type Interface = Record<string, Array<string>>;
 
-class SkappInfo {
-  name: string;
-  url: string;
-}
+const providerKey = "provider";
 
 type ProviderInfo = {
-  providerInterface: Interface;
+  providerInterface: Interface | null;
   isProviderConnected: boolean;
   isProviderLoaded: boolean;
-  metadata: ProviderMetadata;
+  metadata: ProviderMetadata | null;
 };
 
 type ProviderMetadata = {
   name: string;
-  url: string;
+  domain: string;
 };
+
+class SkappInfo {
+  name: string;
+  domain: string;
+}
 
 export class Bridge {
   parentConnection: Connection;
@@ -51,19 +53,31 @@ export class Bridge {
       timeout: 5_000,
     });
     this.parentConnection = connection;
+
+    // Initialize an empty provider info.
+
+    this.providerInfo = {
+      providerInterface: null,
+      isProviderConnected: false,
+      isProviderLoaded: false,
+      metadata: null,
+    }
   }
 
   // =================
   // Public Bridge API
   // =================
 
-  protected async callInterface(method: string) {
+  protected async callInterface(method: string): Promise<unknown> {
     if (!this.providerInfo.isProviderConnected) {
       throw new Error("Provider not connected, cannot access interface");
     }
+    if (!this.providerInfo.providerInterface) {
+      throw new Error("Provider interface not present despite being connected. Possible logic bug");
+    }
 
     if (method in this.providerInfo.providerInterface) {
-      return this.providerConnection.promise.then(async (child: CallSender) => child[method]());
+      return this.providerConnection.promise.then(async (child: CallSender) => child.callInterface(method));
     } else {
       throw new Error(
         `Unsupported method for this provider interface. Method: '${method}', Interface: ${this.providerInfo.providerInterface}`
@@ -72,15 +86,17 @@ export class Bridge {
   }
 
   protected async connectProvider(): Promise<ProviderInfo> {
-    return this.connect()
-      .then((providerInterface) => {
+    return this.connectWithInput()
+      .then(([providerInterface, metadata]) => {
         this.providerInfo.isProviderConnected = true;
         this.providerInfo.providerInterface = providerInterface;
+        this.providerInfo.metadata = metadata;
       })
       .catch(() => {
         this.providerInfo.isProviderConnected = false;
       })
       .then(() => {
+        this.storeProvider();
         return this.providerInfo;
       });
   }
@@ -99,47 +115,37 @@ export class Bridge {
   protected async fetchStoredProvider(): Promise<ProviderInfo> {
     // Check for stored provider.
 
-    const providerUrl = this.checkForStoredProvider();
+    const providerMetadata = this.checkForStoredProvider();
 
-    if (!providerUrl) {
+    if (!providerMetadata) {
       this.setProviderUnloaded();
       return this.providerInfo;
     }
 
     // Launch the stored provider and try to load it.
 
-    return this.launchProvider(providerUrl)
+    return this.launchProvider(providerMetadata.domain)
       .then(async () => {
         this.providerInfo.isProviderLoaded = true;
 
         // Try to connect to stored provider.
-        return this.load()
-          .then((providerInterface) => {
+        return this.connectSilently()
+          .then(([providerInterface, metadata]) => {
             this.providerInfo.isProviderConnected = true;
             this.providerInfo.providerInterface = providerInterface;
+            this.providerInfo.metadata = metadata;
           })
           .catch(() => {
             this.providerInfo.isProviderConnected = false;
+          })
+          .then(() => {
+            this.storeProvider();
           });
       })
       .catch(() => this.setProviderUnloaded())
       .then(() => {
         return this.providerInfo;
       });
-  }
-
-  // Launch the iframe with the provider and establish a connection.
-  protected async launchProvider(providerUrl: string): Promise<void> {
-    // Create the iframe.
-    const childFrame = createIframe(providerUrl);
-
-    // Connect to the iframe.
-    const connection = connectToChild({
-      iframe: childFrame,
-      timeout: 5_000,
-    });
-
-    this.providerConnection = connection;
   }
 
   /**
@@ -154,23 +160,32 @@ export class Bridge {
         // Launch the provider.
         this.launchProvider(providerUrl)
       )
-      .then(() => (this.providerInfo.isProviderLoaded = true))
-      .then(async () =>
-        this.connect()
-          .then((providerInterface: Interface) => {
+      .then(async () => {
+        this.providerInfo.isProviderLoaded;
+
+        return this.connectWithInput()
+          .then(([providerInterface, metadata]) => {
             this.providerInfo.isProviderConnected = true;
             this.providerInfo.providerInterface = providerInterface;
+            this.providerInfo.metadata = metadata;
           })
           .catch(() => {
             this.providerInfo.isProviderConnected = false;
           })
-      )
+          .then(() => {
+            this.storeProvider();
+          });
+      })
       .catch(() => {
         // Don't change anything here. On error we should retain the previous state.
       })
       .then(() => {
         return this.providerInfo;
       });
+  }
+
+  protected async setSkappInfo(skappInfo: SkappInfo): Promise<void> {
+    this.skappInfo = skappInfo;
   }
 
   // TODO: There's currently no flow for this.
@@ -186,10 +201,10 @@ export class Bridge {
   // =======================
 
   /**
-   * Tries to connect to the provider, connecting even if the user isn't already logged in to the provider (as opposed to load()).
+   * Tries to connect to the provider, connecting even if the user isn't already logged in to the provider (as opposed to connectSilently()).
    */
-  protected async connect(): Promise<[Interface, ProviderMetadata]> {
-    return this.providerConnection.promise.then(async (child) => child.connect(this.skappInfo));
+  protected async connectWithInput(): Promise<[Interface, ProviderMetadata]> {
+    return this.providerConnection.promise.then(async (child) => child.connectWithInput(this.skappInfo));
   }
 
   protected async disconnect(): Promise<void> {
@@ -197,11 +212,10 @@ export class Bridge {
   }
 
   /**
-   * Tries to load the provider, only connecting if the user is already logged in to that provider (as opposed to connect()).
+   * Tries to connect to the provider, only connecting if the user is already logged in to the provider (as opposed to connectWithInput()).
    */
-  protected async load(): Promise<[Interface, ProviderMetadata]> {
-    // Call load() on the provider with the skapp info.
-    return this.providerConnection.promise.then(async (child) => child.load(this.skappInfo));
+  protected async connectSilently(): Promise<[Interface, ProviderMetadata]> {
+    return this.providerConnection.promise.then(async (child) => child.connectSilently(this.skappInfo));
   }
 
   // =======================
@@ -210,16 +224,36 @@ export class Bridge {
 
   // TODO
   /**
-   * Checks for provider stored in local storage for this bridge's origin.
+   * Checks for provider stored in the bridge's local storage.
    * @returns - The provider metadata including URL and name.
    */
   protected checkForStoredProvider(): ProviderMetadata | null {
-    throw new Error("unimplemented");
+    const metadata = localStorage.getItem(providerKey);
+    if (!metadata) {
+      return null;
+    }
+    return JSON.parse(metadata);
+  }
+
+  /**
+   * Launches the iframe with the provider and establish a connection.
+   */
+  protected async launchProvider(providerUrl: string): Promise<void> {
+    // Create the iframe.
+    const childFrame = createIframe(providerUrl);
+
+    // Connect to the iframe.
+    const connection = connectToChild({
+      iframe: childFrame,
+      timeout: 5_000,
+    });
+
+    this.providerConnection = connection;
   }
 
   // TODO
   /**
-   * Create iframe with router.
+   * Creates iframe with router.
    */
   protected async launchRouter(): Promise<string> {
     // TODO: Should this open a window instead?
@@ -254,5 +288,12 @@ runRouter();
   protected setProviderUnloaded(): void {
     this.providerInfo.isProviderLoaded = false;
     this.providerInfo.isProviderConnected = false;
+  }
+
+  /**
+   * Stores the current provider in the bridge's localStorage.
+   */
+  protected storeProvider(): void {
+    localStorage.setItem(providerKey, JSON.stringify(this.providerInfo.metadata));
   }
 }
