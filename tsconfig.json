@@ -1,13 +1,13 @@
 {
   "compilerOptions": {
-    "noEmit": true,
     "esModuleInterop": true,
-    "strict": false,
+    "strict": true,
     "noImplicitAny": true,
-    "declaration": true,
     "isolatedModules": true,
+    "sourceMap": true,
+    "strictNullChecks": true,
+
     "types": ["node"],
-    "typeRoots": ["./types", "./node_modules/@types"],
-    "strictNullChecks": true
+    "typeRoots": ["./types", "./node_modules/@types"]
   }
 }

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Identity Test Router</title>
+  </head>
+
+  <body>
+    <form id="provider-form" onsubmit="window.submitProvider()">
+      <div>
+        <input type="radio" id="identity-test-provider" name="provider-form-radio" value="<itp-skylink>"
+               checked>
+        <label for="identity-test-provider">
+          Identity Test Provider
+        </label>
+      </div>
+
+      <div>
+        <input type="radio" id="sky-id" name="provider-form-radio" value="<skyid-skylink>">
+        <label for="sky-id">
+          SkyID
+        </label>
+      </div>
+
+      <div>
+        <input type="radio" name="provider-form-radio" value="">
+        Other: <input type="text" id="other-text" name="other-text" />
+      </div>
+
+      <div>
+        <input type="submit" value="OK">
+      </div>
+      <!-- <button>Cancel</button> -->
+      <!-- <button>OK</button> -->
+    </form>
+
+    <script>
+      let submitted = false;
+
+      // Event triggered by clicking "OK".
+      window.submitProvider = () => {
+        // Get the value of the form.
+        const radios = document.getElementsByName("provider-form-radio");
+
+        let providerValue;
+        for (let i = 0, length = radios.length; i < length; i++) {
+          if (radios[i].checked) {
+            providerValue = radios[i].value;
+
+            // only one radio can be logically checked, don't check the rest
+            break;
+          }
+        }
+        
+        if (providerValue === "") {
+          providerValue = document.getElementById("other-text").value;
+        }
+
+        alert(providerValue);
+        // Send the value back to launchRouter().
+        window.opener.postMessage(providerValue, location.origin);
+
+        // Close this window.
+        submitted = true;
+        window.close();
+      }
+
+      // Event that is triggered when the window is closed.
+      window.onbeforeunload = () => {
+        if (!submitted) {
+          window.opener.postMessage("", location.origin);
+        }
+
+        return null;
+      }
+    </script>
+  </body>
+</html>
