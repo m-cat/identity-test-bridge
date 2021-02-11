@@ -1,5 +1,6 @@
 import { connectToChild, connectToParent } from "penpal";
 import { Connection, CallSender } from "penpal/lib/types";
+import { SkynetClient } from "skynet-js";
 
 import { createIframe, popupCenter } from "./utils";
 
@@ -42,10 +43,15 @@ export class Bridge {
   minimumInterface: Interface;
   providerInfo: ProviderInfo;
 
-  protected parentConnection: Connection;
-  protected providerConnection: Connection | null;
+  protected client: SkynetClient;
+  protected parentHandshake: Connection;
+  protected providerHandshake?: Connection;
 
   constructor(minimumInterface: Interface) {
+    if (typeof Storage == "undefined") {
+      throw new Error("Browser does not support web storage");
+    }
+
     // Set the interface.
 
     this.minimumInterface = minimumInterface;
@@ -64,12 +70,15 @@ export class Bridge {
       },
       timeout: 5_000,
     });
-    this.parentConnection = connection;
+    this.parentHandshake = connection;
 
     // Initialize an empty provider info.
 
     this.providerInfo = emptyProviderInfo;
-    this.providerConnection = null;
+    this.providerHandshake = undefined;
+
+    // Initialize the Skynet client.
+    this.client = new SkynetClient();
   }
 
   // =================
@@ -83,17 +92,18 @@ export class Bridge {
     if (!this.providerInfo.providerInterface) {
       throw new Error("Provider interface not present despite being connected. Possible logic bug");
     }
-    if (!this.providerConnection) {
-      throw new Error("provider connection not established, possible logic bug");
+    if (!this.providerHandshake) {
+      throw new Error("Provider connection not established, possible logic bug");
     }
 
-    if (method in this.providerInfo.providerInterface) {
-      return this.providerConnection.promise.then(async (child: CallSender) => child.callInterface(method));
-    } else {
-      throw new Error(
-        `Unsupported method for this provider interface. Method: '${method}', Interface: ${this.providerInfo.providerInterface}`
-      );
-    }
+    // TODO: This check doesn't work.
+    // if (method in this.providerInfo.providerInterface) {
+    //   throw new Error(
+    //     `Unsupported method for this provider interface. Method: '${method}', Interface: ${this.providerInfo.providerInterface}`
+    //   );
+    // }
+
+    return this.providerHandshake.promise.then(async (child: CallSender) => child.callInterface(method));
   }
 
   protected async connectProvider(skappInfo: SkappInfo): Promise<ProviderInfo> {
@@ -134,28 +144,25 @@ export class Bridge {
 
     // Launch the stored provider and try to connect to it without user input.
 
-    return this.launchProvider(providerMetadata.domain)
-      .then(async (metadata) => {
-        this.providerInfo.isProviderLoaded = true;
-        this.providerInfo.metadata = metadata;
+    try {
+      const metadata = await this.launchProvider(providerMetadata.domain);
+      this.providerInfo.isProviderLoaded = true;
+      this.providerInfo.metadata = metadata;
 
-        // Try to connect to stored provider.
-        return this.connectSilently(skappInfo)
-          .then((providerInterface) => {
-            this.providerInfo.isProviderConnected = true;
-            this.providerInfo.providerInterface = providerInterface;
-          })
-          .catch(() => {
-            this.providerInfo.isProviderConnected = false;
-          })
-          .then(() => {
-            this.storeProvider();
-          });
-      })
-      .catch(() => this.setProviderUnloaded())
-      .then(() => {
-        return this.providerInfo;
-      });
+      // Try to connect to stored provider.
+      try {
+        const providerInterface = await this.connectSilently(skappInfo);
+        this.providerInfo.isProviderConnected = true;
+        this.providerInfo.providerInterface = providerInterface;
+      } catch (error) {
+        this.providerInfo.isProviderConnected = false;
+      }
+
+      this.storeProvider();
+    } catch(error) {
+      this.setProviderUnloaded();
+    }
+    return this.providerInfo;
   }
 
   /**
@@ -165,41 +172,44 @@ export class Bridge {
     // TODO: Add clean removal of old provider.
 
     // Launch router.
-    return this.launchRouter()
-      .then(async (providerUrl: string) =>
-        // Launch the provider.
-        this.launchProvider(providerUrl)
-           )
-      .then(async (metadata) => {
-        this.providerInfo.isProviderLoaded;
-        this.providerInfo.metadata = metadata;
+    try {
+      const providerUrl = await this.launchRouter();
 
-        return this.connectWithInput(skappInfo)
-          .then((providerInterface) => {
-            this.providerInfo.isProviderConnected = true;
-            this.providerInfo.providerInterface = providerInterface;
-          })
-          .catch(() => {
-            this.providerInfo.isProviderConnected = false;
-          })
-          .then(() => {
-            this.storeProvider();
-          });
-      })
-      .catch(() => {
-        // Don't change anything here. On error we should retain the previous state.
-      })
-      .then(() => {
-        return this.providerInfo;
-      });
+      // Launch the provider.
+      const metadata = await this.launchProvider(providerUrl);
+      this.providerInfo.isProviderLoaded = true;
+      this.providerInfo.metadata = metadata;
+
+      try {
+        const providerInterface = await this.connectWithInput(skappInfo);
+        this.providerInfo.isProviderConnected = true;
+        this.providerInfo.providerInterface = providerInterface;
+      } catch(error) {
+        this.providerInfo.isProviderConnected = false;
+      }
+
+      this.storeProvider();
+    } catch(error) {
+      // Don't change anything here. On error we should retain the previous state.
+    }
+
+    return this.providerInfo;
   }
 
-  // TODO: There's currently no flow for this.
   /**
    * Destroys the loaded provider and sets the state to unloaded.
    */
-  protected unloadProvider(): Promise<void> {
-    throw new Error("unimplemented");
+  protected async unloadProvider(): Promise<void> {
+    if (!this.providerHandshake) {
+      throw new Error("provider connection not established, cannot unload a provider that was not loaded");
+    }
+
+    if (this.providerInfo.isProviderConnected) {
+      await this.disconnect();
+    }
+    this.providerInfo = emptyProviderInfo;
+    // TODO: Close the child iframe?
+    return this.providerHandshake.destroy();
   }
 
   // =======================
@@ -211,19 +221,19 @@ export class Bridge {
    * Tries to connect to the provider, connecting even if the user isn't already logged in to the provider (as opposed to connectSilently()).
    */
   protected async connectWithInput(skappInfo: SkappInfo): Promise<Interface> {
-    if (!this.providerConnection) {
+    if (!this.providerHandshake) {
       throw new Error("provider connection not established, possible logic bug");
     }
 
-    return this.providerConnection.promise.then(async (child) => child.connectWithInput(skappInfo));
+    return this.providerHandshake.promise.then(async (child) => child.connectWithInput(skappInfo));
   }
 
   protected async disconnect(): Promise<void> {
-    if (!this.providerConnection) {
+    if (!this.providerHandshake) {
       throw new Error("provider connection not established, possible logic bug");
     }
 
-    return this.providerConnection.promise.then(async (child) => child.disconnect());
+    return this.providerHandshake.promise.then(async (child) => child.disconnect());
   }
 
   // TODO: Reject provider if it doesn't satisfy minimum interface.
@@ -231,11 +241,11 @@ export class Bridge {
    * Tries to connect to the provider, only connecting if the user is already logged in to the provider (as opposed to connectWithInput()).
    */
   protected async connectSilently(skappInfo: SkappInfo): Promise<Interface> {
-    if (!this.providerConnection) {
+    if (!this.providerHandshake) {
       throw new Error("provider connection not established, possible logic bug");
     }
 
-    return this.providerConnection.promise.then(async (child) => child.connectSilently(skappInfo));
+    return this.providerHandshake.promise.then(async (child) => child.connectSilently(skappInfo));
   }
 
   // =======================
@@ -260,7 +270,7 @@ export class Bridge {
    * Launches the iframe with the provider and establish a connection.
    */
   protected async launchProvider(providerUrl: string): Promise<ProviderMetadata> {
-    // TODO: Duplicate check for valid providerUrl here.
+    // TODO: Check for valid base32 providerUrl here.
 
     // Create the iframe.
     const childFrame = createIframe(providerUrl);
@@ -271,9 +281,9 @@ export class Bridge {
       timeout: 5_000,
     });
 
-    this.providerConnection = connection;
+    this.providerHandshake = connection;
 
-    return this.providerConnection.promise.then(async (child) => child.getMetadata());
+    return this.providerHandshake.promise.then(async (child) => child.getMetadata());
   }
 
   // TODO: should check periodically if window is still open.
@@ -290,16 +300,21 @@ export class Bridge {
         if (event.origin !== location.origin)
           return;
 
-        alert(event.data);
-
         window.removeEventListener("message", handleMessage);
 
         // Resolve or reject the promise.
-        if (event.data === "") {
+
+        if (!event.data || event.data === "") {
           reject(new Error("did not get a provider URL"));
         }
-        // TODO: Check for valid base32 skylink.
-        resolve(event.data);
+        // Get base32 skylink.
+        let providerUrl = this.client.getSkylinkUrl(event.data, { subdomain: true });
+        // TODO: This is necessary because getSkylinkUrl() currently prepends the base32 skylink to the existing subdomain instead of replacing it. Remove once getSkylinkUrl() is fixed.
+        let providerUrlArr = providerUrl.split(".");
+        providerUrlArr.splice(1,1);
+        providerUrl = providerUrlArr.join(".");
+
+        resolve(providerUrl);
       };
 
       window.addEventListener("message", handleMessage);

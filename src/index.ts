@@ -19,9 +19,5 @@ class IdentityBridge extends Bridge {
 // START EXECUTION
 // ===============
 
-if (typeof Storage == "undefined") {
-  throw new Error("Browser does not support web storage");
-}
-
 // Launch the bridge.
 new IdentityBridge();
