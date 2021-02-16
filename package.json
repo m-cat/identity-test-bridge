@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "",
   "private": true,
+  "browserslist": [
+    "defaults",
+    "not IE 11",
+    "not OperaMini all"
+  ],
   "scripts": {
     "build": "npx webpack",
     "lint:eslint": "eslint --ext .ts src",

@@ -1,7 +1,7 @@
 /**
  * Creates an invisible iframe with the given src and adds it to the page.
  */
-export function createIframe(srcUrl: string) {
+export function createIframe(srcUrl: string): HTMLIFrameElement {
   if (!srcUrl.startsWith("https://")) {
     srcUrl = `https://${srcUrl}`;
   }
@@ -9,6 +9,11 @@ export function createIframe(srcUrl: string) {
   const childFrame = document.createElement("iframe")!;
   childFrame.src = srcUrl;
   childFrame.style.display = "none";
+
+  // Set sandbox permissions.
+  childFrame.sandbox.add("allow-same-origin");
+  childFrame.sandbox.add("allow-scripts");
+
   // Add the frame to the page.
   if (document.readyState === "complete" || document.readyState === "interactive") {
     document.body.appendChild(childFrame);

@@ -1,17 +1,21 @@
+// TODO: Enable full eslint lints.
+
 import { Bridge } from "./bridge";
-import type { Interface } from "./bridge";
 
 class IdentityBridge extends Bridge {
   // TODO: Make interfaces accept parameters?
-  static minimumInterface: Interface = {
-    identity: ["string"],
-    isLoggedIn: ["bool"],
-    login: [],
-    logout: [],
+  static bridgeInfo = {
+    minimumInterface: {
+      identity: ["string"],
+      isLoggedIn: ["bool"],
+      login: [],
+      logout: [],
+    },
+    relativeRouterUrl: "router.html"
   };
 
   constructor() {
-    super(IdentityBridge.minimumInterface);
+    super(IdentityBridge.bridgeInfo);
   }
 }
 
