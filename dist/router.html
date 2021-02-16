@@ -9,7 +9,7 @@
     <form id="provider-form" onsubmit="window.submitProvider()">
       <div>
         <input type="radio" id="identity-test-provider" name="provider-form-radio"
-               value="_Anz6VvgTOQTqnq2QcAdzAvlbSyLm_DGa15GnmiyMOJXRQ"
+               value="_ACkmFZrTymIaLkXmnsv0cRGc304BCKM-dkqVUdtQBSeLA"
                checked>
         <label for="identity-test-provider">
           Identity Test Provider
@@ -31,8 +31,7 @@
       <div>
         <input type="submit" value="OK">
       </div>
-      <!-- <button>Cancel</button> -->
-      <!-- <button>OK</button> -->
+      <!-- TODO: Cancel button -->
     </form>
 
     <script>
@@ -48,7 +47,7 @@
           if (radios[i].checked) {
             providerValue = radios[i].value;
 
-            // only one radio can be logically checked, don't check the rest
+            // Only one radio can be logically selected, don't check the rest.
             break;
           }
         }

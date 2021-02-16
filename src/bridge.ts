@@ -1,5 +1,5 @@
-import { connectToChild, connectToParent } from "penpal";
-import { Connection, CallSender } from "penpal/lib/types";
+import { ChildHandshake, ParentHandshake, WindowMessenger } from "post-me";
+import type { Connection } from "post-me";
 import { SkynetClient } from "skynet-js";
 
 import { createIframe, popupCenter } from "./utils";
@@ -50,8 +50,8 @@ export class Bridge {
 
   protected childFrame?: HTMLIFrameElement;
   protected client: SkynetClient;
-  protected parentHandshake: Connection;
-  protected providerHandshake?: Connection;
+  protected parentHandshake: Promise<Connection>;
+  protected providerHandshake?: Promise<Connection>;
 
   constructor(bridgeInfo: BridgeInfo) {
     if (typeof Storage == "undefined") {
@@ -64,20 +64,22 @@ export class Bridge {
 
     // Enable communication with parent skapp.
 
-    const connection = connectToParent({
-      methods: {
-        callInterface: (method: string) => this.callInterface(method),
-        connectProvider: (skappInfo: SkappInfo) => this.connectProvider(skappInfo),
-        disconnectProvider: () => this.disconnectProvider(),
-        fetchStoredProvider: (skappInfo: SkappInfo) => this.fetchStoredProvider(skappInfo),
-        getBridgeInfo: () => this.getBridgeInfo(),
-        getProviderInfo: () => this.getProviderInfo(),
-        loadNewProvider: (skappInfo: SkappInfo) => this.loadNewProvider(skappInfo),
-        unloadProvider: () => this.unloadProvider(),
-      },
-      timeout: 5_000,
+    const methods = {
+      callInterface: (method: string) => this.callInterface(method),
+      connectProvider: (skappInfo: SkappInfo) => this.connectProvider(skappInfo),
+      disconnectProvider: () => this.disconnectProvider(),
+      fetchStoredProvider: (skappInfo: SkappInfo) => this.fetchStoredProvider(skappInfo),
+      getBridgeInfo: () => this.getBridgeInfo(),
+      getProviderInfo: () => this.getProviderInfo(),
+      loadNewProvider: (skappInfo: SkappInfo) => this.loadNewProvider(skappInfo),
+      unloadProvider: () => this.unloadProvider(),
+    };
+    const messenger = new WindowMessenger({
+      localWindow: window,
+      remoteWindow: window.parent,
+      remoteOrigin: "*",
     });
-    this.parentHandshake = connection;
+    this.parentHandshake = ChildHandshake(messenger, methods);
 
     // Initialize an empty provider info.
 
@@ -110,7 +112,8 @@ export class Bridge {
     //   );
     // }
 
-    return this.providerHandshake.promise.then(async (child: CallSender) => child.callInterface(method));
+    const connection = await this.providerHandshake;
+    return connection.remoteHandle().call("callInterface", method);
   }
 
   protected async connectProvider(skappInfo: SkappInfo): Promise<ProviderInfo> {
@@ -229,7 +232,7 @@ export class Bridge {
       this.childFrame.parentNode!.removeChild(this.childFrame);
     }
 
-    await this.providerHandshake.destroy();
+    await this.providerHandshake.then((connection) => connection.close());
 
     return this.providerInfo;
   }
@@ -247,7 +250,8 @@ export class Bridge {
       throw new Error("provider connection not established, possible logic bug");
     }
 
-    return this.providerHandshake.promise.then(async (child) => child.connectWithInput(skappInfo));
+    const connection = await this.providerHandshake;
+    return connection.remoteHandle().call("connectWithInput", skappInfo);
   }
 
   protected async disconnect(): Promise<void> {
@@ -255,7 +259,8 @@ export class Bridge {
       throw new Error("provider connection not established, possible logic bug");
     }
 
-    return this.providerHandshake.promise.then(async (child) => child.disconnect());
+    const connection = await this.providerHandshake;
+    return connection.remoteHandle().call("disconnect");
   }
 
   // TODO: Reject provider if it doesn't satisfy minimum interface.
@@ -267,7 +272,8 @@ export class Bridge {
       throw new Error("provider connection not established, possible logic bug");
     }
 
-    return this.providerHandshake.promise.then(async (child) => child.connectSilently(skappInfo));
+    const connection = await this.providerHandshake;
+    return connection.remoteHandle().call("connectSilently", skappInfo);
   }
 
   // =======================
@@ -300,14 +306,18 @@ export class Bridge {
 
     // Create the iframe.
     this.childFrame = createIframe(providerUrl);
+    const childWindow = this.childFrame.contentWindow!;
 
     // Connect to the iframe.
-    this.providerHandshake = connectToChild({
-      iframe: this.childFrame,
-      timeout: 5_000,
+    const messenger = new WindowMessenger({
+      localWindow: window,
+      remoteWindow: childWindow,
+      remoteOrigin: "*",
     });
+    this.providerHandshake = ParentHandshake(messenger);
 
-    return this.providerHandshake.promise.then(async (child) => child.getMetadata());
+    const connection = await this.providerHandshake;
+    return connection.remoteHandle().call("getMetadata");
   }
 
   // TODO: should check periodically if window is still open.

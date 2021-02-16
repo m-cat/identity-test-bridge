@@ -13,16 +13,10 @@ export function createIframe(srcUrl: string): HTMLIFrameElement {
   // Set sandbox permissions.
   childFrame.sandbox.add("allow-same-origin");
   childFrame.sandbox.add("allow-scripts");
+  // TODO: remove this permission
+  childFrame.sandbox.add("allow-popups");
 
-  // Add the frame to the page.
-  if (document.readyState === "complete" || document.readyState === "interactive") {
-    document.body.appendChild(childFrame);
-  } else {
-    document.addEventListener("DOMContentLoaded", () => {
-      document.body.appendChild(childFrame);
-    });
-  }
-
+  document.body.appendChild(childFrame);
   return childFrame;
 }
 

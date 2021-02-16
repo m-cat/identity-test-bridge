@@ -1,10 +1,10 @@
 {
   "compilerOptions": {
     "esModuleInterop": true,
-    "strict": true,
-    "noImplicitAny": true,
     "isolatedModules": true,
+    "noImplicitAny": true,
     "sourceMap": true,
+    "strict": true,
     "strictNullChecks": true,
 
     "types": ["node"],
