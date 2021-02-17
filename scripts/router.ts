@@ -1,7 +1,53 @@
-let submitted = false;
+import { ChildHandshake, WindowMessenger } from "post-me";
+import type { Connection } from "post-me";
 
-// Event triggered by clicking "OK".
-(window as any).submitProvider = () => {
+let submitted = false;
+let bridgeWindow: Window | undefined = undefined;
+let parentConnection: Connection | undefined = undefined;
+
+// ======
+// Events
+// =======
+
+// Event that is triggered when the window is closed.
+window.onbeforeunload = () => {
+  if (!submitted) {
+    // Send value to signify that the router was closed.
+    emitResult("closed");
+  }
+
+  // Close the parent connection.
+  if (parentConnection) {
+    parentConnection.close();
+  }
+
+  return null;
+};
+
+window.onload = async () => {
+  // Enable communication with opening skapp.
+
+  const methods = {
+    setFrameName: (name: string) => {
+      bridgeWindow = window.opener[name];
+    },
+  };
+  const messenger = new WindowMessenger({
+    localWindow: window,
+    remoteWindow: window.opener,
+    remoteOrigin: "*",
+  });
+  parentConnection = await ChildHandshake(messenger, methods);
+};
+
+// ============
+// User Actions
+// ============
+
+// Function triggered by clicking "OK".
+(window as any).submitProvider = async () => {
+  submitted = true;
+
   // Get the value of the form.
   const radios = document.getElementsByName("provider-form-radio");
 
@@ -21,20 +67,29 @@ let submitted = false;
     providerValue = (<HTMLInputElement>document.getElementById("other-text"))!.value;
   }
 
+  if (!bridgeWindow) {
+    // Send error message and close window.
+    await emitResult("Could not find bridge window");
+    window.close();
+    return;
+  }
+
   // Send the value back to launchRouter().
-  window.opener.postMessage(providerValue, location.origin);
+  bridgeWindow.postMessage(providerValue, location.origin);
+
+  // Send success message to opener.
+  await emitResult("success");
 
   // Close this window.
-  submitted = true;
   window.close();
 };
 
-// Event that is triggered when the window is closed.
-window.onbeforeunload = () => {
-  if (!submitted) {
-    // Send a blank value to signify that the router failed.
-    window.opener.postMessage("", location.origin);
-  }
+// ================
+// Helper Functions
+// ================
 
-  return null;
-};
+async function emitResult(result: string): Promise<void> {
+  if (parentConnection) {
+    return parentConnection.localHandle().emit("result", result);
+  }
+}

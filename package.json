@@ -9,7 +9,7 @@
     "not OperaMini all"
   ],
   "scripts": {
-    "build": "npx webpack && tsc --project tsconfig.scripts.json",
+    "build": "npx webpack && npx webpack --config webpack.config.router.js",
     "lint:eslint": "eslint --ext .ts src",
     "lint:tsc": "tsc --noemit && tsc --project tsconfig.scripts.json --noemit",
     "test": "echo \"Error: no test specified\" && exit 1"

@@ -1,6 +1,7 @@
 // TODO: Enable full eslint lints.
 
 import { Bridge } from "./bridge";
+import { routerName, routerW, routerH } from "./consts";
 
 class IdentityBridge extends Bridge {
   // TODO: Make interfaces accept parameters?
@@ -11,7 +12,10 @@ class IdentityBridge extends Bridge {
       login: [],
       logout: [],
     },
-    relativeRouterUrl: "router.html"
+    relativeRouterUrl: "router.html",
+    routerName,
+    routerW,
+    routerH
   };
 
   constructor() {

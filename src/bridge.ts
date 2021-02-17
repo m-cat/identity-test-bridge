@@ -2,17 +2,17 @@ import { ChildHandshake, ParentHandshake, WindowMessenger } from "post-me";
 import type { Connection } from "post-me";
 import { SkynetClient } from "skynet-js";
 
-import { createIframe, popupCenter } from "./utils";
+import { createIframe } from "./utils";
+import { handshakeAttemptsInterval, handshakeMaxAttempts, providerKey } from "./consts";
 
 export type Interface = Record<string, Array<string>>;
-
-const providerKey = "provider";
-const routerName = "Identity Router";
-const [routerW, routerH] = [400, 500];
 
 type BridgeInfo = {
   minimumInterface: Interface;
   relativeRouterUrl: string;
+  routerName: string;
+  routerW: number;
+  routerH: number;
 }
 
 type ProviderInfo = {
@@ -52,6 +52,7 @@ export class Bridge {
   protected client: SkynetClient;
   protected parentHandshake: Promise<Connection>;
   protected providerHandshake?: Promise<Connection>;
+  protected receivedProviderUrl?: string;
 
   constructor(bridgeInfo: BridgeInfo) {
     if (typeof Storage == "undefined") {
@@ -87,7 +88,23 @@ export class Bridge {
     this.providerHandshake = undefined;
 
     // Initialize the Skynet client.
+
     this.client = new SkynetClient();
+
+    // Register listener for provider URL from the router.
+
+    window.addEventListener("message", (event: MessageEvent) => {
+      // Only consider messages from the same domain.
+      if (event.origin !== location.origin)
+        return;
+
+      if (!event.data || event.data === "") {
+        return;
+      }
+
+      // Set the provider URL as-is. Convert to subdomain-format later.
+      this.receivedProviderUrl = event.data;
+    });
   }
 
   // =================
@@ -119,8 +136,7 @@ export class Bridge {
   protected async connectProvider(skappInfo: SkappInfo): Promise<ProviderInfo> {
     const providerInterface = await this.connectWithInput(skappInfo);
 
-    this.providerInfo.isProviderConnected = true;
-    this.providerInfo.providerInterface = providerInterface;
+    this.setProviderConnected(providerInterface);
 
     this.saveStoredProvider();
     return this.providerInfo;
@@ -128,7 +144,7 @@ export class Bridge {
 
   protected async disconnectProvider(): Promise<ProviderInfo> {
     return this.disconnect().then(() => {
-      this.providerInfo.isProviderConnected = false;
+      this.setProviderDisconnected();
       return this.providerInfo;
     });
   }
@@ -156,19 +172,15 @@ export class Bridge {
 
     // Launch the stored provider and try to connect to it without user input.
 
+    // Ignore any caught error since we are in silent mode.
     try {
       const metadata = await this.launchProvider(providerMetadata.domain);
-      this.providerInfo.isProviderLoaded = true;
-      this.providerInfo.metadata = metadata;
+      this.setProviderLoaded(metadata);
 
       // Try to connect to stored provider.
-      try {
-        const providerInterface = await this.connectSilently(skappInfo);
-        this.providerInfo.isProviderConnected = true;
-        this.providerInfo.providerInterface = providerInterface;
-      } catch (error) {
-        this.providerInfo.isProviderConnected = false;
-      }
+      // TODO: Get provider info here instead, set final state depending on final value
+      const providerInterface = await this.connectSilently(skappInfo);
+      this.setProviderConnected(providerInterface);
 
       this.saveStoredProvider();
     } catch(error) {
@@ -184,26 +196,23 @@ export class Bridge {
     // TODO: Add clean removal of old provider.
 
     // Launch router.
-    try {
-      const providerUrl = await this.launchRouter();
-
-      // Launch the provider.
-      const metadata = await this.launchProvider(providerUrl);
-      this.providerInfo.isProviderLoaded = true;
-      this.providerInfo.metadata = metadata;
-
-      try {
-        const providerInterface = await this.connectWithInput(skappInfo);
-        this.providerInfo.isProviderConnected = true;
-        this.providerInfo.providerInterface = providerInterface;
-      } catch(error) {
-        this.providerInfo.isProviderConnected = false;
-      }
-
-      this.saveStoredProvider();
-    } catch(error) {
-      // Don't change anything here. On error we should retain the previous state.
+    if (!this.receivedProviderUrl) {
+      throw new Error("Did not receive provider URL");
     }
+    // Format the provider URL.
+    const providerUrl = this.formatProviderUrl(this.receivedProviderUrl);
+    // Erase the received provider URL.
+    this.receivedProviderUrl = undefined;
+
+    // Launch the provider.
+    const metadata = await this.launchProvider(providerUrl);
+    this.setProviderLoaded(metadata);
+
+    // TODO: Get provider info here instead, set final state depending on final value
+    const providerInterface = await this.connectWithInput(skappInfo);
+    this.setProviderConnected(providerInterface);
+
+    this.saveStoredProvider();
 
     return this.providerInfo;
   }
@@ -286,6 +295,11 @@ export class Bridge {
    * @returns - The provider metadata including URL and name.
    */
   protected checkForStoredProvider(): ProviderMetadata | null {
+    if (!localStorage) {
+      console.log("WARNING: localStorage disabled");
+      return null;
+    }
+
     const metadata = localStorage.getItem(providerKey);
     if (!metadata) {
       return null;
@@ -295,7 +309,22 @@ export class Bridge {
   }
 
   protected clearStoredProvider(): void {
+    if (!localStorage) {
+      console.log("WARNING: localStorage disabled");
+      return;
+    }
+
     localStorage.removeItem(providerKey);
+  }
+
+  protected formatProviderUrl(providerUrl: string): string {
+    // Get base32 skylink.
+    providerUrl = this.client.getSkylinkUrl(providerUrl, { subdomain: true });
+    // TODO: This is necessary because getSkylinkUrl() currently prepends the base32 skylink to the existing subdomain instead of replacing it. Remove once getSkylinkUrl() is fixed.
+    const providerUrlArr = providerUrl.split(".");
+    providerUrlArr.splice(1,1);
+    providerUrl = providerUrlArr.join(".");
+    return providerUrl
   }
 
   /**
@@ -314,50 +343,24 @@ export class Bridge {
       remoteWindow: childWindow,
       remoteOrigin: "*",
     });
-    this.providerHandshake = ParentHandshake(messenger);
+    this.providerHandshake = ParentHandshake(messenger, {}, handshakeMaxAttempts, handshakeAttemptsInterval);
 
     const connection = await this.providerHandshake;
     return connection.remoteHandle().call("getMetadata");
   }
 
-  // TODO: should check periodically if window is still open.
-  /**
-   * Creates window with router and waits for a response.
-   */
-  protected async launchRouter(): Promise<string> {
-    // Set the router URL.
-    const routerUrl = "router.html";
+  protected setProviderConnected(providerInterface: Interface): void {
+    this.providerInfo.isProviderConnected = true;
+    this.providerInfo.providerInterface = providerInterface;
+  }
 
-    const promise: Promise<string> = new Promise((resolve, reject) => {
-      // Register a message listener.
-      const handleMessage = (event: MessageEvent) => {
-        if (event.origin !== location.origin)
-          return;
+  protected setProviderDisconnected(): void {
+    this.providerInfo.isProviderConnected = false;
+  }
 
-        window.removeEventListener("message", handleMessage);
-
-        // Resolve or reject the promise.
-
-        if (!event.data || event.data === "") {
-          reject(new Error("did not get a provider URL"));
-        }
-        // Get base32 skylink.
-        let providerUrl = this.client.getSkylinkUrl(event.data, { subdomain: true });
-        // TODO: This is necessary because getSkylinkUrl() currently prepends the base32 skylink to the existing subdomain instead of replacing it. Remove once getSkylinkUrl() is fixed.
-        const providerUrlArr = providerUrl.split(".");
-        providerUrlArr.splice(1,1);
-        providerUrl = providerUrlArr.join(".");
-
-        resolve(providerUrl);
-      };
-
-      window.addEventListener("message", handleMessage);
-    });
-
-    // Open the router.
-    const newWindow = popupCenter(routerUrl, routerName, routerW, routerH);
-
-    return promise;
+  protected setProviderLoaded(metadata: ProviderMetadata): void {
+    this.providerInfo.isProviderLoaded = true;
+    this.providerInfo.metadata = metadata;
   }
 
   protected setProviderUnloaded(): void {
@@ -368,6 +371,11 @@ export class Bridge {
    * Stores the current provider in the bridge's localStorage.
    */
   protected saveStoredProvider(): void {
+    if (!localStorage) {
+      console.log("WARNING: localStorage disabled");
+      return;
+    }
+
     localStorage.setItem(providerKey, JSON.stringify(this.providerInfo.metadata));
   }
 }

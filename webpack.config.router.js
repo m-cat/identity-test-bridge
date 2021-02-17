@@ -1,16 +1,18 @@
 const path = require("path");
 
 module.exports = {
-  entry: "./src/index.ts",
+  entry: "./scripts/router.ts",
   mode: "production",
 
-  devtool: "inline-source-map",
   module: {
     rules: [
       {
         test: /\.tsx?$/,
-        use: "ts-loader",
-        exclude: /node_modules/,
+        loader: "ts-loader",
+        options: { configFile: "tsconfig.scripts.json" },
+        include: [
+          path.resolve(__dirname, "scripts/router.ts"),
+        ],
       },
     ],
   },
@@ -18,7 +20,7 @@ module.exports = {
     extensions: [".tsx", ".ts", ".js"],
   },
   output: {
-    filename: "main.js",
+    filename: "router.js",
     path: path.resolve(__dirname, "dist"),
   },
 };
