@@ -7,7 +7,7 @@ import { handshakeAttemptsInterval, handshakeMaxAttempts, providerKey } from "./
 
 export type Interface = Record<string, Array<string>>;
 
-type BridgeInfo = {
+type BridgeMetadata = {
   minimumInterface: Interface;
   relativeRouterUrl: string;
   routerName: string;
@@ -15,14 +15,14 @@ type BridgeInfo = {
   routerH: number;
 }
 
-type ProviderInfo = {
+type ProviderStatus = {
   providerInterface: Interface | null;
   isProviderConnected: boolean;
   isProviderLoaded: boolean;
   metadata: ProviderMetadata | null;
 };
 
-const emptyProviderInfo = {
+const emptyProviderStatus = {
   providerInterface: null,
   isProviderConnected: false,
   isProviderLoaded: false,
@@ -32,6 +32,7 @@ const emptyProviderInfo = {
 type ProviderMetadata = {
   name: string;
   domain: string;
+  relativeConnectUrl: string;
 };
 
 class SkappInfo {
@@ -45,8 +46,8 @@ class SkappInfo {
 }
 
 export class Bridge {
-  bridgeInfo: BridgeInfo;
-  providerInfo: ProviderInfo;
+  bridgeMetadata: BridgeMetadata;
+  providerStatus: ProviderStatus;
 
   protected childFrame?: HTMLIFrameElement;
   protected client: SkynetClient;
@@ -54,14 +55,14 @@ export class Bridge {
   protected providerHandshake?: Promise<Connection>;
   protected receivedProviderUrl?: string;
 
-  constructor(bridgeInfo: BridgeInfo) {
+  constructor(bridgeMetadata: BridgeMetadata) {
     if (typeof Storage == "undefined") {
       throw new Error("Browser does not support web storage");
     }
 
     // Set the bridge info.
 
-    this.bridgeInfo = bridgeInfo;
+    this.bridgeMetadata = bridgeMetadata;
 
     // Enable communication with parent skapp.
 
@@ -70,8 +71,8 @@ export class Bridge {
       connectProvider: (skappInfo: SkappInfo) => this.connectProvider(skappInfo),
       disconnectProvider: () => this.disconnectProvider(),
       fetchStoredProvider: (skappInfo: SkappInfo) => this.fetchStoredProvider(skappInfo),
-      getBridgeInfo: () => this.getBridgeInfo(),
-      getProviderInfo: () => this.getProviderInfo(),
+      getBridgeMetadata: () => this.getBridgeMetadata(),
+      getProviderStatus: () => this.getProviderStatus(),
       loadNewProvider: (skappInfo: SkappInfo) => this.loadNewProvider(skappInfo),
       unloadProvider: () => this.unloadProvider(),
     };
@@ -84,7 +85,7 @@ export class Bridge {
 
     // Initialize an empty provider info.
 
-    this.providerInfo = emptyProviderInfo;
+    this.providerStatus = emptyProviderStatus;
     this.providerHandshake = undefined;
 
     // Initialize the Skynet client.
@@ -112,10 +113,10 @@ export class Bridge {
   // =================
 
   protected async callInterface(method: string): Promise<unknown> {
-    if (!this.providerInfo.isProviderConnected) {
+    if (!this.providerStatus.isProviderConnected) {
       throw new Error("Provider not connected, cannot access interface");
     }
-    if (!this.providerInfo.providerInterface) {
+    if (!this.providerStatus.providerInterface) {
       throw new Error("Provider interface not present despite being connected. Possible logic bug");
     }
     if (!this.providerHandshake) {
@@ -123,9 +124,9 @@ export class Bridge {
     }
 
     // TODO: This check doesn't work.
-    // if (method in this.providerInfo.providerInterface) {
+    // if (method in this.providerStatus.providerInterface) {
     //   throw new Error(
-    //     `Unsupported method for this provider interface. Method: '${method}', Interface: ${this.providerInfo.providerInterface}`
+    //     `Unsupported method for this provider interface. Method: '${method}', Interface: ${this.providerStatus.providerInterface}`
     //   );
     // }
 
@@ -133,41 +134,41 @@ export class Bridge {
     return connection.remoteHandle().call("callInterface", method);
   }
 
-  protected async connectProvider(skappInfo: SkappInfo): Promise<ProviderInfo> {
+  protected async connectProvider(skappInfo: SkappInfo): Promise<ProviderStatus> {
     const providerInterface = await this.connectWithInput(skappInfo);
 
     this.setProviderConnected(providerInterface);
 
     this.saveStoredProvider();
-    return this.providerInfo;
+    return this.providerStatus;
   }
 
-  protected async disconnectProvider(): Promise<ProviderInfo> {
+  protected async disconnectProvider(): Promise<ProviderStatus> {
     return this.disconnect().then(() => {
       this.setProviderDisconnected();
-      return this.providerInfo;
+      return this.providerStatus;
     });
   }
 
-  protected async getBridgeInfo(): Promise<BridgeInfo> {
-    return this.bridgeInfo;
+  protected async getBridgeMetadata(): Promise<BridgeMetadata> {
+    return this.bridgeMetadata;
   }
 
-  protected async getProviderInfo(): Promise<ProviderInfo> {
-    return this.providerInfo;
+  protected async getProviderStatus(): Promise<ProviderStatus> {
+    return this.providerStatus;
   }
 
   /**
    * Tries to fetch the stored provider, silently trying to connect to it if one is found.
    */
-  protected async fetchStoredProvider(skappInfo: SkappInfo): Promise<ProviderInfo> {
+  protected async fetchStoredProvider(skappInfo: SkappInfo): Promise<ProviderStatus> {
     // Check for stored provider.
 
     const providerMetadata = this.checkForStoredProvider();
 
     if (!providerMetadata) {
       this.setProviderUnloaded();
-      return this.providerInfo;
+      return this.providerStatus;
     }
 
     // Launch the stored provider and try to connect to it without user input.
@@ -186,13 +187,13 @@ export class Bridge {
     } catch(error) {
       this.setProviderUnloaded();
     }
-    return this.providerInfo;
+    return this.providerStatus;
   }
 
   /**
    * Loads a new provider, as opposed to a stored one, by asking the user for it.
    */
-  protected async loadNewProvider(skappInfo: SkappInfo): Promise<ProviderInfo> {
+  protected async loadNewProvider(skappInfo: SkappInfo): Promise<ProviderStatus> {
     // TODO: Add clean removal of old provider.
 
     // Launch router.
@@ -214,18 +215,18 @@ export class Bridge {
 
     this.saveStoredProvider();
 
-    return this.providerInfo;
+    return this.providerStatus;
   }
 
   /**
    * Destroys the loaded provider and sets the state to unloaded.
    */
-  protected async unloadProvider(): Promise<ProviderInfo> {
+  protected async unloadProvider(): Promise<ProviderStatus> {
     if (!this.providerHandshake) {
       throw new Error("provider connection not established, cannot unload a provider that was not loaded");
     }
 
-    if (this.providerInfo.isProviderConnected) {
+    if (this.providerStatus.isProviderConnected) {
       try {
         await this.disconnect();
       } catch (error) {
@@ -233,7 +234,7 @@ export class Bridge {
       }
     }
 
-    this.providerInfo = emptyProviderInfo;
+    this.providerStatus = emptyProviderStatus;
     this.clearStoredProvider();
 
     // Close the child iframe.
@@ -243,7 +244,7 @@ export class Bridge {
 
     await this.providerHandshake.then((connection) => connection.close());
 
-    return this.providerInfo;
+    return this.providerStatus;
   }
 
   // =======================
@@ -350,21 +351,21 @@ export class Bridge {
   }
 
   protected setProviderConnected(providerInterface: Interface): void {
-    this.providerInfo.isProviderConnected = true;
-    this.providerInfo.providerInterface = providerInterface;
+    this.providerStatus.isProviderConnected = true;
+    this.providerStatus.providerInterface = providerInterface;
   }
 
   protected setProviderDisconnected(): void {
-    this.providerInfo.isProviderConnected = false;
+    this.providerStatus.isProviderConnected = false;
   }
 
   protected setProviderLoaded(metadata: ProviderMetadata): void {
-    this.providerInfo.isProviderLoaded = true;
-    this.providerInfo.metadata = metadata;
+    this.providerStatus.isProviderLoaded = true;
+    this.providerStatus.metadata = metadata;
   }
 
   protected setProviderUnloaded(): void {
-    this.providerInfo = emptyProviderInfo;
+    this.providerStatus = emptyProviderStatus;
   }
 
   /**
@@ -376,6 +377,6 @@ export class Bridge {
       return;
     }
 
-    localStorage.setItem(providerKey, JSON.stringify(this.providerInfo.metadata));
+    localStorage.setItem(providerKey, JSON.stringify(this.providerStatus.metadata));
   }
 }
