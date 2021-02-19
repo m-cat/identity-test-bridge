@@ -345,7 +345,7 @@ export class Bridge {
 
     // Register listener for connected info from the connector.
 
-    const listener = async (event: MessageEvent<unknown>) => {
+    const listener = async (event: MessageEvent) => {
       // Only consider messages from the provider domain.
       if (event.origin !== providerUrl)
         return;
@@ -354,8 +354,13 @@ export class Bridge {
         return;
       }
 
+      // The message must be of type "connectionComplete".
+      if (!event.data.messageType || event.data.messageType !== "connectionComplete") {
+        return
+      }
+
       // Finish connecting and get the interface.
-      const receivedConnectedInfo = event.data;
+      const receivedConnectedInfo = event.data.connectedInfo;
       const providerInterface = await this.connectWithInput(receivedConnectedInfo);
 
       // TODO: Reject provider if it doesn't satisfy minimum interface.
