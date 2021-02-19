@@ -7,13 +7,13 @@ let parentConnection: Connection | undefined = undefined;
 
 // ======
 // Events
-// =======
+// ======
 
 // Event that is triggered when the window is closed.
 window.onbeforeunload = () => {
   if (!submitted) {
     // Send value to signify that the router was closed.
-    emitResult("closed");
+    returnMessage("closed");
   }
 
   // Close the parent connection.
@@ -22,6 +22,10 @@ window.onbeforeunload = () => {
   }
 
   return null;
+};
+
+window.onerror = function(error) {
+  returnMessage(error);
 };
 
 window.onload = async () => {
@@ -69,16 +73,16 @@ window.onload = async () => {
 
   if (!bridgeWindow) {
     // Send error message and close window.
-    await emitResult("Could not find bridge window");
+    await returnMessage("Could not find bridge window");
     window.close();
     return;
   }
 
-  // Send the value back to launchRouter().
+  // Send the value to the bridge.
   bridgeWindow.postMessage(providerValue, location.origin);
 
   // Send success message to opener.
-  await emitResult("success");
+  await returnMessage("success");
 
   // Close this window.
   window.close();
@@ -88,7 +92,7 @@ window.onload = async () => {
 // Helper Functions
 // ================
 
-async function emitResult(result: string): Promise<void> {
+async function returnMessage(result: string | Event): Promise<void> {
   if (parentConnection) {
     return parentConnection.localHandle().emit("result", result);
   }

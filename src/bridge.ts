@@ -2,13 +2,14 @@ import { ChildHandshake, ParentHandshake, WindowMessenger } from "post-me";
 import type { Connection } from "post-me";
 import { SkynetClient } from "skynet-js";
 
-import { createIframe } from "./utils";
+import { createIframe, ensureUrl } from "./utils";
 import { handshakeAttemptsInterval, handshakeMaxAttempts, providerKey } from "./consts";
 
 export type Interface = Record<string, Array<string>>;
 
 type BridgeMetadata = {
   minimumInterface: Interface;
+
   relativeRouterUrl: string;
   routerName: string;
   routerW: number;
@@ -31,18 +32,17 @@ const emptyProviderStatus = {
 
 type ProviderMetadata = {
   name: string;
-  domain: string;
-  relativeConnectUrl: string;
+  url: string;
+
+  relativeConnectorPath: string;
+  connectorName: string;
+  connectorW: number;
+  connectorH: number;
 };
 
-class SkappInfo {
+export type SkappInfo = {
   name: string;
   domain: string;
-
-  constructor(name: string) {
-    this.name = name;
-    this.domain = location.hostname;
-  }
 }
 
 export class Bridge {
@@ -51,6 +51,7 @@ export class Bridge {
 
   protected childFrame?: HTMLIFrameElement;
   protected client: SkynetClient;
+  protected connectedInfoListener?: EventListener;
   protected parentHandshake: Promise<Connection>;
   protected providerHandshake?: Promise<Connection>;
   protected receivedProviderUrl?: string;
@@ -68,7 +69,6 @@ export class Bridge {
 
     const methods = {
       callInterface: (method: string) => this.callInterface(method),
-      connectProvider: (skappInfo: SkappInfo) => this.connectProvider(skappInfo),
       disconnectProvider: () => this.disconnectProvider(),
       fetchStoredProvider: (skappInfo: SkappInfo) => this.fetchStoredProvider(skappInfo),
       getBridgeMetadata: () => this.getBridgeMetadata(),
@@ -134,20 +134,10 @@ export class Bridge {
     return connection.remoteHandle().call("callInterface", method);
   }
 
-  protected async connectProvider(skappInfo: SkappInfo): Promise<ProviderStatus> {
-    const providerInterface = await this.connectWithInput(skappInfo);
-
-    this.setProviderConnected(providerInterface);
-
-    this.saveStoredProvider();
-    return this.providerStatus;
-  }
-
   protected async disconnectProvider(): Promise<ProviderStatus> {
-    return this.disconnect().then(() => {
-      this.setProviderDisconnected();
-      return this.providerStatus;
-    });
+    await this.disconnect();
+    this.setProviderDisconnected();
+    return this.providerStatus;
   }
 
   protected async getBridgeMetadata(): Promise<BridgeMetadata> {
@@ -175,15 +165,15 @@ export class Bridge {
 
     // Ignore any caught error since we are in silent mode.
     try {
-      const metadata = await this.launchProvider(providerMetadata.domain);
+      const metadata = await this.launchProvider(providerMetadata.url);
       this.setProviderLoaded(metadata);
+      this.saveStoredProvider();
 
       // Try to connect to stored provider.
-      // TODO: Get provider info here instead, set final state depending on final value
       const providerInterface = await this.connectSilently(skappInfo);
-      this.setProviderConnected(providerInterface);
-
-      this.saveStoredProvider();
+      if (providerInterface) {
+        this.setProviderConnected(providerInterface);
+      }
     } catch(error) {
       this.setProviderUnloaded();
     }
@@ -196,10 +186,10 @@ export class Bridge {
   protected async loadNewProvider(skappInfo: SkappInfo): Promise<ProviderStatus> {
     // TODO: Add clean removal of old provider.
 
-    // Launch router.
     if (!this.receivedProviderUrl) {
       throw new Error("Did not receive provider URL");
     }
+
     // Format the provider URL.
     const providerUrl = this.formatProviderUrl(this.receivedProviderUrl);
     // Erase the received provider URL.
@@ -208,11 +198,6 @@ export class Bridge {
     // Launch the provider.
     const metadata = await this.launchProvider(providerUrl);
     this.setProviderLoaded(metadata);
-
-    // TODO: Get provider info here instead, set final state depending on final value
-    const providerInterface = await this.connectWithInput(skappInfo);
-    this.setProviderConnected(providerInterface);
-
     this.saveStoredProvider();
 
     return this.providerStatus;
@@ -223,17 +208,20 @@ export class Bridge {
    */
   protected async unloadProvider(): Promise<ProviderStatus> {
     if (!this.providerHandshake) {
-      throw new Error("provider connection not established, cannot unload a provider that was not loaded");
+      throw new Error("Provider connection not established, cannot unload a provider that was not loaded");
     }
 
+    // Disconnect provider.
     if (this.providerStatus.isProviderConnected) {
       try {
         await this.disconnect();
       } catch (error) {
+        // Provider errored while disconnecting. Log the error and move on.
         console.log(error);
       }
     }
 
+    // Clear stored provider.
     this.providerStatus = emptyProviderStatus;
     this.clearStoredProvider();
 
@@ -242,7 +230,13 @@ export class Bridge {
       this.childFrame.parentNode!.removeChild(this.childFrame);
     }
 
+    // Close the connection.
     await this.providerHandshake.then((connection) => connection.close());
+
+    // Unregister the connected info listener.
+    if (this.connectedInfoListener) {
+      window.removeEventListener("message", this.connectedInfoListener);
+    }
 
     return this.providerStatus;
   }
@@ -253,37 +247,33 @@ export class Bridge {
 
   // TODO: Reject provider if it doesn't satisfy minimum interface.
   /**
-   * Tries to connect to the provider, connecting even if the user isn't already logged in to the provider (as opposed to connectSilently()).
-   */
-  protected async connectWithInput(skappInfo: SkappInfo): Promise<Interface> {
-    if (!this.providerHandshake) {
-      throw new Error("provider connection not established, possible logic bug");
-    }
-
-    const connection = await this.providerHandshake;
-    return connection.remoteHandle().call("connectWithInput", skappInfo);
-  }
-
-  protected async disconnect(): Promise<void> {
-    if (!this.providerHandshake) {
-      throw new Error("provider connection not established, possible logic bug");
-    }
-
-    const connection = await this.providerHandshake;
-    return connection.remoteHandle().call("disconnect");
-  }
-
-  // TODO: Reject provider if it doesn't satisfy minimum interface.
-  /**
    * Tries to connect to the provider, only connecting if the user is already logged in to the provider (as opposed to connectWithInput()).
    */
-  protected async connectSilently(skappInfo: SkappInfo): Promise<Interface> {
+  protected async connectSilently(skappInfo: SkappInfo): Promise<Interface | null> {
     if (!this.providerHandshake) {
-      throw new Error("provider connection not established, possible logic bug");
+      throw new Error("Provider connection not established, possible logic bug");
     }
 
     const connection = await this.providerHandshake;
     return connection.remoteHandle().call("connectSilently", skappInfo);
+  }
+
+  protected async connectWithInput(receivedConnectedInfo: unknown): Promise<Interface> {
+    if (!this.providerHandshake) {
+      throw new Error("Provider connection not established, possible logic bug");
+    }
+
+    const connection = await this.providerHandshake;
+    return connection.remoteHandle().call("connectWithInput", receivedConnectedInfo);
+  }
+
+  protected async disconnect(): Promise<void> {
+    if (!this.providerHandshake) {
+      throw new Error("Provider connection not established, possible logic bug");
+    }
+
+    const connection = await this.providerHandshake;
+    return connection.remoteHandle().call("disconnect");
   }
 
   // =======================
@@ -335,10 +325,13 @@ export class Bridge {
     // TODO: Check for valid base32 providerUrl here.
 
     // Create the iframe.
-    this.childFrame = createIframe(providerUrl);
+
+    providerUrl = ensureUrl(providerUrl);
+    this.childFrame = createIframe(providerUrl, providerUrl);
     const childWindow = this.childFrame.contentWindow!;
 
     // Connect to the iframe.
+
     const messenger = new WindowMessenger({
       localWindow: window,
       remoteWindow: childWindow,
@@ -346,8 +339,41 @@ export class Bridge {
     });
     this.providerHandshake = ParentHandshake(messenger, {}, handshakeMaxAttempts, handshakeAttemptsInterval);
 
-    const connection = await this.providerHandshake;
-    return connection.remoteHandle().call("getMetadata");
+    const parentConnection = await this.parentHandshake;
+    const providerConnection = await this.providerHandshake;
+    const remoteHandle = providerConnection.remoteHandle();
+
+    // Register listener for connected info from the connector.
+
+    const listener = async (event: MessageEvent<unknown>) => {
+      // Only consider messages from the provider domain.
+      if (event.origin !== providerUrl)
+        return;
+
+      if (!event.data || event.data === "") {
+        return;
+      }
+
+      // Finish connecting and get the interface.
+      const receivedConnectedInfo = event.data;
+      const providerInterface = await this.connectWithInput(receivedConnectedInfo);
+
+      // TODO: Reject provider if it doesn't satisfy minimum interface.
+      if (providerInterface) {
+        this.setProviderConnected(providerInterface);
+      }
+
+      // Send connectionComplete back up to the skapp.
+      const localHandle = parentConnection.localHandle();
+      localHandle.emit("connectionComplete", this.providerStatus);
+    };
+    window.addEventListener("message", listener);
+    // @ts-expect-error TS is wrong here as far as I can tell.
+    this.connectedInfoListener = listener;
+
+    // Get the provider metadata.
+
+    return remoteHandle.call("getMetadata");
   }
 
   protected setProviderConnected(providerInterface: Interface): void {
