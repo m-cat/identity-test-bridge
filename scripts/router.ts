@@ -24,7 +24,7 @@ window.onbeforeunload = () => {
   return null;
 };
 
-window.onerror = function(error) {
+window.onerror = function (error) {
   returnMessage(error);
 };
 

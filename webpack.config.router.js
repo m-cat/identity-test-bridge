@@ -10,9 +10,7 @@ module.exports = {
         test: /\.tsx?$/,
         loader: "ts-loader",
         options: { configFile: "tsconfig.scripts.json" },
-        include: [
-          path.resolve(__dirname, "scripts/router.ts"),
-        ],
+        include: [path.resolve(__dirname, "scripts/router.ts")],
       },
     ],
   },

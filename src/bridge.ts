@@ -14,7 +14,7 @@ type BridgeMetadata = {
   routerName: string;
   routerW: number;
   routerH: number;
-}
+};
 
 type ProviderStatus = {
   providerInterface: Interface | null;
@@ -43,7 +43,7 @@ type ProviderMetadata = {
 export type SkappInfo = {
   name: string;
   domain: string;
-}
+};
 
 export class Bridge {
   bridgeMetadata: BridgeMetadata;
@@ -96,8 +96,7 @@ export class Bridge {
 
     window.addEventListener("message", (event: MessageEvent) => {
       // Only consider messages from the same domain.
-      if (event.origin !== location.origin)
-        return;
+      if (event.origin !== location.origin) return;
 
       if (!event.data || event.data === "") {
         return;
@@ -174,7 +173,7 @@ export class Bridge {
       if (providerInterface) {
         this.setProviderConnected(providerInterface);
       }
-    } catch(error) {
+    } catch (error) {
       this.setProviderUnloaded();
     }
     return this.providerStatus;
@@ -313,9 +312,9 @@ export class Bridge {
     providerUrl = this.client.getSkylinkUrl(providerUrl, { subdomain: true });
     // TODO: This is necessary because getSkylinkUrl() currently prepends the base32 skylink to the existing subdomain instead of replacing it. Remove once getSkylinkUrl() is fixed.
     const providerUrlArr = providerUrl.split(".");
-    providerUrlArr.splice(1,1);
+    providerUrlArr.splice(1, 1);
     providerUrl = providerUrlArr.join(".");
-    return providerUrl
+    return providerUrl;
   }
 
   /**
@@ -347,8 +346,7 @@ export class Bridge {
 
     const listener = async (event: MessageEvent) => {
       // Only consider messages from the provider domain.
-      if (event.origin !== providerUrl)
-        return;
+      if (event.origin !== providerUrl) return;
 
       if (!event.data || event.data === "") {
         return;
@@ -356,7 +354,7 @@ export class Bridge {
 
       // The message must be of type "connectionComplete".
       if (!event.data.messageType || event.data.messageType !== "connectionComplete") {
-        return
+        return;
       }
 
       // Finish connecting and get the interface.

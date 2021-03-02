@@ -15,7 +15,7 @@ class IdentityBridge extends Bridge {
     relativeRouterUrl,
     routerName,
     routerW,
-    routerH
+    routerH,
   };
 
   constructor() {
