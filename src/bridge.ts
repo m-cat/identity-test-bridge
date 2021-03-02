@@ -51,7 +51,7 @@ export class Bridge {
 
   protected childFrame?: HTMLIFrameElement;
   protected client: SkynetClient;
-  protected connectedInfoListener?: EventListener;
+  protected connectionInfoListener?: EventListener;
   protected parentHandshake: Promise<Connection>;
   protected providerHandshake?: Promise<Connection>;
   protected receivedProviderUrl?: string;
@@ -234,8 +234,8 @@ export class Bridge {
     await this.providerHandshake.then((connection) => connection.close());
 
     // Unregister the connected info listener.
-    if (this.connectedInfoListener) {
-      window.removeEventListener("message", this.connectedInfoListener);
+    if (this.connectionInfoListener) {
+      window.removeEventListener("message", this.connectionInfoListener);
     }
 
     return this.providerStatus;
@@ -360,7 +360,7 @@ export class Bridge {
       }
 
       // Finish connecting and get the interface.
-      const receivedConnectedInfo = event.data.connectedInfo;
+      const receivedConnectedInfo = event.data.connectionInfo;
       const providerInterface = await this.connectWithInput(receivedConnectedInfo);
 
       // TODO: Reject provider if it doesn't satisfy minimum interface.
@@ -374,7 +374,7 @@ export class Bridge {
     };
     window.addEventListener("message", listener);
     // @ts-expect-error TS is wrong here as far as I can tell.
-    this.connectedInfoListener = listener;
+    this.connectionInfoListener = listener;
 
     // Get the provider metadata.
 
