@@ -1,3 +1,5 @@
 node_modules
-dist/*.js*
+dist/main.js
+dist/main.js.LICENSE.txt
+dist/router.js
 .DS_Store

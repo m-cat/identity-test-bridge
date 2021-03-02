@@ -258,13 +258,13 @@ export class Bridge {
     return connection.remoteHandle().call("connectSilently", skappInfo);
   }
 
-  protected async connectWithInput(receivedConnectedInfo: unknown): Promise<Interface> {
+  protected async connectWithInput(receivedConnectionInfo: unknown): Promise<Interface> {
     if (!this.providerHandshake) {
       throw new Error("Provider connection not established, possible logic bug");
     }
 
     const connection = await this.providerHandshake;
-    return connection.remoteHandle().call("connectWithInput", receivedConnectedInfo);
+    return connection.remoteHandle().call("connectWithInput", receivedConnectionInfo);
   }
 
   protected async disconnect(): Promise<void> {
@@ -360,8 +360,8 @@ export class Bridge {
       }
 
       // Finish connecting and get the interface.
-      const receivedConnectedInfo = event.data.connectionInfo;
-      const providerInterface = await this.connectWithInput(receivedConnectedInfo);
+      const receivedConnectionInfo = event.data.connectionInfo;
+      const providerInterface = await this.connectWithInput(receivedConnectionInfo);
 
       // TODO: Reject provider if it doesn't satisfy minimum interface.
       if (providerInterface) {
