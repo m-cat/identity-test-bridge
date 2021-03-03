@@ -1,9 +1,4 @@
-import { ChildHandshake, WindowMessenger } from "post-me";
-import type { Connection } from "post-me";
-
 let submitted = false;
-let bridgeWindow: Window | undefined = undefined;
-let parentConnection: Connection | undefined = undefined;
 
 // ======
 // Events
@@ -16,11 +11,6 @@ window.onbeforeunload = () => {
     returnMessage("closed");
   }
 
-  // Close the parent connection.
-  if (parentConnection) {
-    parentConnection.close();
-  }
-
   return null;
 };
 
@@ -28,28 +18,14 @@ window.onerror = function (error) {
   returnMessage(error);
 };
 
-window.onload = async () => {
-  // Enable communication with opening skapp.
-
-  const methods = {
-    setFrameName: (name: string) => {
-      bridgeWindow = window.opener[name];
-    },
-  };
-  const messenger = new WindowMessenger({
-    localWindow: window,
-    remoteWindow: window.opener,
-    remoteOrigin: "*",
-  });
-  parentConnection = await ChildHandshake(messenger, methods);
-};
+window.onload = async () => {};
 
 // ============
 // User Actions
 // ============
 
 // Function triggered by clicking "OK".
-(window as any).submitProvider = async () => {
+(window as any).submitProvider = () => {
   submitted = true;
 
   // Get the value of the form.
@@ -71,18 +47,11 @@ window.onload = async () => {
     providerValue = (<HTMLInputElement>document.getElementById("other-text"))!.value;
   }
 
-  if (!bridgeWindow) {
-    // Send error message and close window.
-    await returnMessage("Could not find bridge window");
-    window.close();
-    return;
-  }
-
   // Send the value to the bridge.
-  bridgeWindow.postMessage(providerValue, location.origin);
+  window.localStorage.setItem("receivedProviderUrl", providerValue);
 
   // Send success message to opener.
-  await returnMessage("success");
+  returnMessage("success");
 
   // Close this window.
   window.close();
@@ -92,8 +61,7 @@ window.onload = async () => {
 // Helper Functions
 // ================
 
-async function returnMessage(result: string | Event): Promise<void> {
-  if (parentConnection) {
-    return parentConnection.localHandle().emit("result", result);
-  }
+function returnMessage(message: string | Event) {
+  window.opener.postMessage(message, "*");
+  window.close();
 }
