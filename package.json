@@ -18,8 +18,8 @@
     "type": "git",
     "url": "git+https://github.com/m-cat/identity-test-bridge.git"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "Marcin Swieczkowski",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/m-cat/identity-test-bridge/issues"
   },
@@ -41,9 +41,11 @@
   },
   "dependencies": {
     "post-me": "^0.4.4",
-    "skynet-js": "^3.0.1-beta"
+    "skynet-js": "^3.0.1-beta",
+    "url-join": "^4.0.1"
   },
   "devDependencies": {
+    "@types/url-join": "^4.0.0",
     "@typescript-eslint/eslint-plugin": "^4.3.0",
     "@typescript-eslint/parser": "^4.3.0",
     "eslint": "^7.19.0",

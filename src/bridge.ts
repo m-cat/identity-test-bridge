@@ -1,121 +1,75 @@
 import { ChildHandshake, ParentHandshake, WindowMessenger } from "post-me";
 import type { Connection } from "post-me";
+import { BridgeMetadata, createIframe, ProviderMetadata, SkappInfo } from "skynet-interface-utils";
 import { SkynetClient } from "skynet-js";
 
-import { createIframe, ensureUrl } from "./utils";
-import { handshakeAttemptsInterval, handshakeMaxAttempts, providerKey } from "./consts";
+import { handshakeAttemptsInterval, handshakeMaxAttempts } from "./consts";
 
-export type Interface = Record<string, Array<string>>;
-
-type BridgeMetadata = {
-  minimumInterface: Interface;
-
-  relativeRouterUrl: string;
-  routerName: string;
-  routerW: number;
-  routerH: number;
-};
-
-type ProviderStatus = {
-  providerInterface: Interface | null;
-  isProviderConnected: boolean;
-  isProviderLoaded: boolean;
-  metadata: ProviderMetadata | null;
-};
-
-const emptyProviderStatus = {
-  providerInterface: null,
-  isProviderConnected: false,
-  isProviderLoaded: false,
-  metadata: null,
-};
-
-type ProviderMetadata = {
-  name: string;
-  url: string;
-
-  relativeConnectorPath: string;
-  connectorName: string;
-  connectorW: number;
-  connectorH: number;
-};
-
-export type SkappInfo = {
-  name: string;
-  domain: string;
+type ProviderInfo = {
+  connection: Connection,
+  metadata: ProviderMetadata;
+  childFrame: HTMLIFrameElement;
 };
 
 export class Bridge {
-  bridgeMetadata: BridgeMetadata;
-  providerStatus: ProviderStatus;
+  public skappInfo?: SkappInfo;
 
-  protected childFrame?: HTMLIFrameElement;
-  protected client: SkynetClient;
-  protected parentHandshake: Promise<Connection>;
-  protected providerHandshake?: Promise<Connection>;
-  protected receivedProviderUrl?: string;
+  constructor(
+    public bridgeMetadata: BridgeMetadata,
 
-  constructor(bridgeMetadata: BridgeMetadata) {
+    protected client: SkynetClient,
+    protected interfaces: Map<string, ProviderInfo>,
+    protected parentConnection: Connection,
+  ) {
+    // Set child methods.
+
+    const methods = {
+      callInterface: async (interfaceName: string, method: string, ...args: unknown[]) => this.callInterface(interfaceName, method, args),
+      getBridgeMetadata: async (skappInfo: SkappInfo) => this.getBridgeMetadata(skappInfo),
+      loginPopup: async (interfaceName: string) => this.loginPopup(interfaceName),
+      loginSilent: async (interfaceName: string) => this.loginSilent(interfaceName),
+      logout: async (interfaceName: string) => this.logout(interfaceName),
+    };
+    this.parentConnection.localHandle().setMethods(methods);
+  }
+
+  static async initialize(bridgeMetadata: BridgeMetadata): Promise<Bridge> {
     if (typeof Storage == "undefined") {
       throw new Error("Browser does not support web storage");
     }
 
-    // Set the bridge info.
-
-    this.bridgeMetadata = bridgeMetadata;
-
     // Enable communication with parent skapp.
 
-    const methods = {
-      callInterface: (method: string) => this.callInterface(method),
-      disconnectProvider: () => this.disconnectProvider(),
-      fetchStoredProvider: (skappInfo: SkappInfo) => this.fetchStoredProvider(skappInfo),
-      getBridgeMetadata: () => this.getBridgeMetadata(),
-      getProviderStatus: () => this.getProviderStatus(),
-      loadNewProvider: (skappInfo: SkappInfo) => this.loadNewProvider(skappInfo),
-      unloadProvider: () => this.unloadProvider(),
-    };
     const messenger = new WindowMessenger({
       localWindow: window,
       remoteWindow: window.parent,
       remoteOrigin: "*",
     });
-    this.parentHandshake = ChildHandshake(messenger, methods);
+    // NOTE: We set the methods in the constructor since we don't have 'this' here.
+    const parentConnection =  await ChildHandshake(messenger);
 
-    // Initialize an empty provider info.
+    // Initialize an interface map.
 
-    this.providerStatus = emptyProviderStatus;
-    this.providerHandshake = undefined;
+    const interfaces = new Map();
 
     // Initialize the Skynet client.
 
-    this.client = new SkynetClient();
+    const client = new SkynetClient();
 
-    // Storage listener for provider URL from the router.
-
-    window.localStorage.removeItem("receivedProviderUrl");
-    window.onstorage = () => {
-      const url = window.localStorage.getItem("receivedProviderUrl");
-      if (url) {
-        this.receivedProviderUrl = url;
-      }
-      window.localStorage.removeItem("receivedProviderUrl");
-    };
+    return new Bridge(bridgeMetadata, client, interfaces, parentConnection);
   }
 
   // =================
   // Public Bridge API
   // =================
 
-  protected async callInterface(method: string): Promise<unknown> {
-    if (!this.providerStatus.isProviderConnected) {
+  protected async callInterface(interfaceName: string, method: string, ...args: unknown[]): Promise<unknown> {
+    const status = this.interfaces.get(interfaceName);
+    if (!status) {
+      throw new Error(`Interface '${interfaceName}' not found`);
+    }
+    if (!status.metadata) {
       throw new Error("Provider not connected, cannot access interface");
-    }
-    if (!this.providerStatus.providerInterface) {
-      throw new Error("Provider interface not present despite being connected. Possible logic bug");
-    }
-    if (!this.providerHandshake) {
-      throw new Error("Provider connection not established, possible logic bug");
     }
 
     // TODO: This check doesn't work.
@@ -125,136 +79,178 @@ export class Bridge {
     //   );
     // }
 
-    const connection = await this.providerHandshake;
-    return connection.remoteHandle().call("callInterface", method);
+    return status.connection.remoteHandle().call("callInterface", method, args);
   }
 
-  protected async disconnectProvider(): Promise<ProviderStatus> {
-    await this.disconnect();
-    this.setProviderDisconnected();
-    return this.providerStatus;
-  }
-
-  protected async getBridgeMetadata(): Promise<BridgeMetadata> {
+  protected async getBridgeMetadata(skappInfo: SkappInfo): Promise<BridgeMetadata> {
+    this.skappInfo = skappInfo;
     return this.bridgeMetadata;
   }
 
-  protected async getProviderStatus(): Promise<ProviderStatus> {
-    return this.providerStatus;
+  /**
+   * Loads and connects to a new provider, as opposed to a stored one, by asking the user for it.
+   *
+   * 1. The gate has already launched the router and is now calling loginPopup() on the bridge.
+   *
+   * 2. The bridge waits for the provider URL from the router.
+   *
+   * 3. The bridge launches the provider and gets its metadata.
+   *
+   * 4. The bridge sends the provider metadata to the router.
+   *
+   * 5. The router opens the connector.
+   *
+   * 6. The bridge calls 'connectPopup()' on the provider and waits for the response.
+   *
+   * 7. The bridge stores the provider for future logins.
+   */
+  protected async loginPopup(interfaceName: string): Promise<void> {
+    if (!this.skappInfo) {
+      throw new Error("getBridgeMetadata() with skappInfo was not called");
+    }
+    if (this.interfaces.get(interfaceName)) {
+      throw new Error(`Interface '${interfaceName}' already loaded`);
+    }
+
+    // Wait for provider URL from the router.
+
+    const receivedProviderUrl: string = await new Promise((resolve, reject) => {
+      const handleEvent = ({ key, newValue }: StorageEvent) => {
+        if (!key) {
+          reject("Storage event data not found");
+          return;
+        }
+
+        if (!["success-router", "event-router", "error-router"].includes(key)) {
+          return;
+        }
+        window.removeEventListener("storage", handleEvent);
+        window.localStorage.removeItem(key);
+
+        if (key === "success-router") {
+          if (!newValue) {
+            reject("Storage event data value not found");
+            return;
+          }
+          resolve(newValue);
+        } else if (key === "event-router") {
+          reject("Window was closed");
+        } else {
+          // Key should be 'error'.
+          if (key !== "error-router") {
+            reject("Unknown key received");
+          }
+          reject(newValue);
+        }
+      };
+
+      window.addEventListener("storage", handleEvent);
+    });
+    // TODO: Kick off another event listener right away as the router window may still be closed or an error may occur.
+
+    // Format the provider URL.
+    const providerUrl = this.formatProviderUrl(receivedProviderUrl);
+
+    // Launch the provider.
+
+    let info;
+    try {
+      info = await this.launchProvider(providerUrl);
+    } catch (err) {
+      // Send an error to the router.
+      window.localStorage.setItem("error-bridge", err);
+      throw err;
+    }
+
+    // Send the metadata to the router.
+
+    const key = "success-bridge"
+    const value = JSON.stringify(info.metadata);
+    window.localStorage.setItem(key, value);
+
+    try {
+      // Try to connect to given provider.
+
+      await info.connection.remoteHandle().call("connectPopup", this.skappInfo);
+      this.setProviderConnected(interfaceName, info);
+      this.saveStoredProvider(interfaceName, info.metadata);
+    } catch (error) {
+      // TODO: Unload provider if launched
+      throw new Error(`Could not login with user input: ${error}`);
+    }
   }
 
   /**
    * Tries to fetch the stored provider, silently trying to connect to it if one is found.
+   *
+   * 1. The bridge checks if a provider has been stored.
+   *
+   * 2. If a provider is found, the bridge launches it.
+   *
+   * 3. The bridge then calls connectSilent() on the provider.
+   *
+   * 4. If everything succeeded, the bridge links the provider to the given interface name in its interface map.
    */
-  protected async fetchStoredProvider(skappInfo: SkappInfo): Promise<ProviderStatus> {
+  protected async loginSilent(interfaceName: string): Promise<void> {
+    if (this.interfaces.get(interfaceName)) {
+      throw new Error(`Interface '${interfaceName}' already loaded`);
+    }
+
     // Check for stored provider.
 
-    const providerMetadata = this.checkForStoredProvider();
-
+    const providerMetadata = this.checkForStoredProvider(interfaceName);
     if (!providerMetadata) {
-      this.setProviderUnloaded();
-      return this.providerStatus;
+      throw new Error(`Stored provider for interface '${interfaceName}' not found`);
     }
 
-    // Launch the stored provider and try to connect to it without user input.
+    // Launch the stored provider.
 
-    // Ignore any caught error since we are in silent mode.
+    const info = await this.launchProvider(providerMetadata.url);
+
+    // Try to connect without user input.
+
     try {
-      const metadata = await this.launchProvider(providerMetadata.url);
-      this.setProviderLoaded(metadata);
-      this.saveStoredProvider();
+      // TODO: Check that returned schema is valid.
 
       // Try to connect to stored provider.
-      const providerInterface = await this.connectSilently(skappInfo);
-      if (providerInterface) {
-        this.setProviderConnected(providerInterface);
-      }
+
+      await info.connection.remoteHandle().call("connectSilent", this.skappInfo);
+      this.setProviderConnected(interfaceName, info);
     } catch (error) {
-      this.setProviderUnloaded();
+      // TODO: Unload provider if launched.
+      throw new Error("Could not login silently");
     }
-    return this.providerStatus;
   }
 
   /**
-   * Loads a new provider, as opposed to a stored one, by asking the user for it.
+   * Logs out and destroys the loaded provider.
    */
-  protected async loadNewProvider(skappInfo: SkappInfo): Promise<ProviderStatus> {
-    // TODO: Add clean removal of old provider.
-
-    if (!this.receivedProviderUrl) {
-      throw new Error("Did not receive provider URL");
-    }
-
-    // Format the provider URL.
-    const providerUrl = this.formatProviderUrl(this.receivedProviderUrl);
-    // Erase the received provider URL.
-    this.receivedProviderUrl = undefined;
-
-    // Launch the provider.
-    const metadata = await this.launchProvider(providerUrl);
-    this.setProviderLoaded(metadata);
-    this.saveStoredProvider();
-
-    return this.providerStatus;
-  }
-
-  /**
-   * Destroys the loaded provider and sets the state to unloaded.
-   */
-  protected async unloadProvider(): Promise<ProviderStatus> {
-    if (!this.providerHandshake) {
-      throw new Error("Provider connection not established, cannot unload a provider that was not loaded");
+  protected async logout(interfaceName: string): Promise<void> {
+    const i = this.interfaces.get(interfaceName);
+    if (!i) {
+      throw new Error(`Interface '${interfaceName}' already loaded`);
     }
 
     // Disconnect provider.
-    if (this.providerStatus.isProviderConnected) {
-      try {
-        await this.disconnect();
-      } catch (error) {
-        // Provider errored while disconnecting. Log the error and move on.
-        console.log(error);
-      }
+
+    try {
+      await i.connection.remoteHandle().call("disconnect");
+    } catch (error) {
+      // Provider errored while disconnecting. Log the error and move on.
+      console.log(error);
     }
+    this.setProviderDisconnected(interfaceName);
 
     // Clear stored provider.
-    this.providerStatus = emptyProviderStatus;
-    this.clearStoredProvider();
+
+    this.clearStoredProvider(interfaceName);
 
     // Close the child iframe.
-    if (this.childFrame) {
-      this.childFrame.parentNode!.removeChild(this.childFrame);
-    }
+
+    i.childFrame.parentNode!.removeChild(i.childFrame);
 
     // Close the connection.
-    await this.providerHandshake.then((connection) => connection.close());
-
-    return this.providerStatus;
-  }
-
-  // =======================
-  // Internal Provider Calls
-  // =======================
-
-  // TODO: Reject provider if it doesn't satisfy minimum interface.
-  /**
-   * Tries to connect to the provider, only connecting if the user is already logged in to the provider.
-   */
-  protected async connectSilently(skappInfo: SkappInfo): Promise<Interface | null> {
-    if (!this.providerHandshake) {
-      throw new Error("Provider connection not established, possible logic bug");
-    }
-
-    const connection = await this.providerHandshake;
-    return connection.remoteHandle().call("connectSilently", skappInfo);
-  }
-
-  protected async disconnect(): Promise<void> {
-    if (!this.providerHandshake) {
-      throw new Error("Provider connection not established, possible logic bug");
-    }
-
-    const connection = await this.providerHandshake;
-    return connection.remoteHandle().call("disconnect");
+    i.connection.close();
   }
 
   // =======================
@@ -266,13 +262,13 @@ export class Bridge {
    *
    * @returns - The provider metadata including URL and name.
    */
-  protected checkForStoredProvider(): ProviderMetadata | null {
+  protected checkForStoredProvider(interfaceName: string): ProviderMetadata | null {
     if (!localStorage) {
       console.log("WARNING: localStorage disabled");
       return null;
     }
 
-    const metadata = localStorage.getItem(providerKey);
+    const metadata = localStorage.getItem(this.interfaceStorageKey(interfaceName));
     if (!metadata) {
       return null;
     }
@@ -280,13 +276,13 @@ export class Bridge {
     return result;
   }
 
-  protected clearStoredProvider(): void {
+  protected clearStoredProvider(interfaceName: string): void {
     if (!localStorage) {
       console.log("WARNING: localStorage disabled");
       return;
     }
 
-    localStorage.removeItem(providerKey);
+    localStorage.removeItem(this.interfaceStorageKey(interfaceName));
   }
 
   protected formatProviderUrl(providerUrl: string): string {
@@ -299,17 +295,20 @@ export class Bridge {
     return providerUrl;
   }
 
+  protected interfaceStorageKey(interfaceName: string): string {
+    return `interface:${interfaceName}`;
+  }
+
   /**
-   * Launches the iframe with the provider and establish a connection.
+   * Launches the iframe with the provider and establishes a connection.
    */
-  protected async launchProvider(providerUrl: string): Promise<void> {
+  protected async launchProvider(providerUrl: string): Promise<ProviderInfo> {
     // TODO: Check for valid base32 providerUrl here.
 
     // Create the iframe.
 
-    providerUrl = ensureUrl(providerUrl);
-    this.childFrame = createIframe(providerUrl, providerUrl);
-    const childWindow = this.childFrame.contentWindow!;
+    const childFrame = createIframe(providerUrl, providerUrl);
+    const childWindow = childFrame.contentWindow!;
 
     // Connect to the iframe.
 
@@ -318,56 +317,30 @@ export class Bridge {
       remoteWindow: childWindow,
       remoteOrigin: "*",
     });
-    this.providerHandshake = ParentHandshake(messenger, {}, handshakeMaxAttempts, handshakeAttemptsInterval);
+    const connection = await ParentHandshake(messenger, {}, handshakeMaxAttempts, handshakeAttemptsInterval);
 
-    const providerConnection = await this.providerHandshake;
-    const remoteHandle = providerConnection.remoteHandle();
+    const metadata = await connection.remoteHandle().call("getProviderMetadata");
 
-    // Set listener for connectionComplete event.
-
-    remoteHandle.addEventListener('connectionComplete', async (payload) => {
-      const connection = JSON.parse(payload);
-      if (!connection.providerInterface || !connection.metadata) {
-        throw new Error("Invalid connectionComplete payload");
-      }
-
-    // TODO: Reject provider if it doesn't satisfy minimum interface.
-      this.setProviderConnected(connection.providerInterface);
-
-      // Send connectionComplete up to the skapp.
-      const parentConnection = await this.parentHandshake;
-      const localHandle = parentConnection.localHandle();
-      localHandle.emit("connectionComplete", this.providerStatus);
-    });
+    return { connection, metadata, childFrame };
   }
 
-  protected setProviderConnected(providerInterface: Interface): void {
-    this.providerStatus.isProviderConnected = true;
-    this.providerStatus.providerInterface = providerInterface;
+  protected setProviderConnected(interfaceName: string, info: ProviderInfo): void {
+    this.interfaces.set(interfaceName, info);
   }
 
-  protected setProviderDisconnected(): void {
-    this.providerStatus.isProviderConnected = false;
-  }
-
-  protected setProviderLoaded(metadata: ProviderMetadata): void {
-    this.providerStatus.isProviderLoaded = true;
-    this.providerStatus.metadata = metadata;
-  }
-
-  protected setProviderUnloaded(): void {
-    this.providerStatus = emptyProviderStatus;
+  protected setProviderDisconnected(interfaceName: string): void {
+    this.interfaces.delete(interfaceName);
   }
 
   /**
    * Stores the current provider in the bridge's localStorage.
    */
-  protected saveStoredProvider(): void {
+  protected saveStoredProvider(interfaceName: string, providerMetadata: ProviderMetadata): void {
     if (!localStorage) {
-      console.log("WARNING: localStorage disabled");
+      console.log("WARNING: localStorage disabled, provider not stored");
       return;
     }
 
-    localStorage.setItem(providerKey, JSON.stringify(this.providerStatus.metadata));
+    localStorage.setItem(this.interfaceStorageKey(interfaceName), JSON.stringify(providerMetadata));
   }
 }
