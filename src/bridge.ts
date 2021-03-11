@@ -1,12 +1,20 @@
 import { ChildHandshake, ParentHandshake, WindowMessenger } from "post-me";
 import type { Connection } from "post-me";
-import { BridgeMetadata, createIframe, ProviderMetadata, SkappInfo } from "skynet-interface-utils";
+import {
+  BridgeMetadata,
+  createIframe,
+  emitStorageEvent,
+  ProviderMetadata,
+  SkappInfo,
+  listenForStorageEvent,
+  monitorOtherListener,
+} from "skynet-interface-utils";
 import { SkynetClient } from "skynet-js";
 
 import { handshakeAttemptsInterval, handshakeMaxAttempts } from "./consts";
 
 type ProviderInfo = {
-  connection: Connection,
+  connection: Connection;
   metadata: ProviderMetadata;
   childFrame: HTMLIFrameElement;
 };
@@ -19,12 +27,16 @@ export class Bridge {
 
     protected client: SkynetClient,
     protected interfaces: Map<string, ProviderInfo>,
-    protected parentConnection: Connection,
+    protected parentConnection: Connection
   ) {
     // Set child methods.
 
     const methods = {
-      callInterface: async (interfaceName: string, method: string, ...args: unknown[]) => this.callInterface(interfaceName, method, args),
+      callInterface: async (interfaceName: string, method: string, ...args: unknown[]) =>
+        this.callInterface(interfaceName, method, args),
+      // connectPopup: async (interfaceName: string) => this.connectPopup(interfaceName),
+      // connectSilent: async (interfaceName: string) => this.connectSilent(interfaceName),
+      // disconnect: async (interfaceName: string) => this.disconnect(interfaceName),
       getBridgeMetadata: async (skappInfo: SkappInfo) => this.getBridgeMetadata(skappInfo),
       loginPopup: async (interfaceName: string) => this.loginPopup(interfaceName),
       loginSilent: async (interfaceName: string) => this.loginSilent(interfaceName),
@@ -46,7 +58,7 @@ export class Bridge {
       remoteOrigin: "*",
     });
     // NOTE: We set the methods in the constructor since we don't have 'this' here.
-    const parentConnection =  await ChildHandshake(messenger);
+    const parentConnection = await ChildHandshake(messenger);
 
     // Initialize an interface map.
 
@@ -72,13 +84,6 @@ export class Bridge {
       throw new Error("Provider not connected, cannot access interface");
     }
 
-    // TODO: This check doesn't work.
-    // if (method in this.providerStatus.providerInterface) {
-    //   throw new Error(
-    //     `Unsupported method for this provider interface. Method: '${method}', Interface: ${this.providerStatus.providerInterface}`
-    //   );
-    // }
-
     return status.connection.remoteHandle().call("callInterface", method, args);
   }
 
@@ -103,81 +108,91 @@ export class Bridge {
    * 6. The bridge calls 'connectPopup()' on the provider and waits for the response.
    *
    * 7. The bridge stores the provider for future logins.
+   *
+   * @param interfaceName
    */
   protected async loginPopup(interfaceName: string): Promise<void> {
-    if (!this.skappInfo) {
-      throw new Error("getBridgeMetadata() with skappInfo was not called");
-    }
-    if (this.interfaces.get(interfaceName)) {
-      throw new Error(`Interface '${interfaceName}' already loaded`);
-    }
+    // Event listener that waits for provider url from the router.
+    const { promise: promiseProviderUrl, controller: controllerProviderUrl } = listenForStorageEvent(
+      "router-provider-url"
+    );
+    // Kick off another event listener along with the first one as the router window may still be closed or an error may occur, and we need to handle that.
+    const { promise: promiseLong, controller: controllerLong } = listenForStorageEvent("router");
+    // Start the router pinger.
+    const { promise: promisePing, controller: controllerPing } = monitorOtherListener("bridge", "router", 5000);
 
-    // Wait for provider URL from the router.
+    // eslint-disable-next-line no-async-promise-executor
+    const promise: Promise<void> = new Promise(async (resolve, reject) => {
+      // Make this promise run in the background and reject on window close or any errors.
+      promiseLong.catch((err: string) => {
+        // Don't emit an error to the router, it should close on its own on error.
+        reject(err);
+      });
+      promisePing.catch(() => {
+        reject("Router timed out");
+      });
 
-    const receivedProviderUrl: string = await new Promise((resolve, reject) => {
-      const handleEvent = ({ key, newValue }: StorageEvent) => {
-        if (!key) {
-          reject("Storage event data not found");
-          return;
+      let receivedProviderUrl;
+      let info;
+      try {
+        // Do initial validation.
+
+        if (!this.skappInfo) {
+          throw new Error("getBridgeMetadata() with skappInfo was not called");
+        }
+        if (this.interfaces.get(interfaceName)) {
+          throw new Error(`Interface '${interfaceName}' already loaded`);
         }
 
-        if (!["success-router", "event-router", "error-router"].includes(key)) {
-          return;
-        }
-        window.removeEventListener("storage", handleEvent);
-        window.localStorage.removeItem(key);
+        // Wait for provider URL from router.
 
-        if (key === "success-router") {
-          if (!newValue) {
-            reject("Storage event data value not found");
-            return;
-          }
-          resolve(newValue);
-        } else if (key === "event-router") {
-          reject("Window was closed");
-        } else {
-          // Key should be 'error'.
-          if (key !== "error-router") {
-            reject("Unknown key received");
-          }
-          reject(newValue);
-        }
-      };
+        receivedProviderUrl = await promiseProviderUrl;
 
-      window.addEventListener("storage", handleEvent);
+        // Launch the provider.
+
+        // Format the provider URL.
+        const providerUrl = this.formatProviderUrl(receivedProviderUrl);
+        info = await this.launchProvider(providerUrl);
+
+        // Send the metadata to the router.
+
+        const value = JSON.stringify(info.metadata);
+        emitStorageEvent("bridge-metadata", "success", value);
+      } catch (err) {
+        // Send an error to the router before throwing.
+        emitStorageEvent("bridge", "error", err);
+        reject(err);
+        return;
+      }
+
+      try {
+        // Try to connect to given provider.
+
+        // Cancel the router pinger. The provider will be in charge of pinging the connector from now on.
+        controllerPing.cleanup();
+
+        await info.connection.remoteHandle().call("connectPopup", this.skappInfo);
+        this.setProviderConnected(interfaceName, info);
+        this.saveStoredProvider(interfaceName, info.metadata);
+      } catch (err) {
+        reject(new Error(`Could not login with user input: ${err}`));
+        return;
+      }
+
+      resolve();
     });
-    // TODO: Kick off another event listener right away as the router window may still be closed or an error may occur.
 
-    // Format the provider URL.
-    const providerUrl = this.formatProviderUrl(receivedProviderUrl);
-
-    // Launch the provider.
-
-    let info;
-    try {
-      info = await this.launchProvider(providerUrl);
-    } catch (err) {
-      // Send an error to the router.
-      window.localStorage.setItem("error-bridge", err);
-      throw err;
-    }
-
-    // Send the metadata to the router.
-
-    const key = "success-bridge"
-    const value = JSON.stringify(info.metadata);
-    window.localStorage.setItem(key, value);
-
-    try {
-      // Try to connect to given provider.
-
-      await info.connection.remoteHandle().call("connectPopup", this.skappInfo);
-      this.setProviderConnected(interfaceName, info);
-      this.saveStoredProvider(interfaceName, info.metadata);
-    } catch (error) {
-      // TODO: Unload provider if launched
-      throw new Error(`Could not login with user input: ${error}`);
-    }
+    return promise
+      .catch((err) => {
+        // TODO: Unload provider if launched
+        throw err;
+      })
+      .finally(() => {
+        // Clean up the event listeners and promises.
+        controllerProviderUrl.cleanup();
+        controllerLong.cleanup();
+        controllerPing.cleanup();
+      });
   }
 
   /**
@@ -190,6 +205,8 @@ export class Bridge {
    * 3. The bridge then calls connectSilent() on the provider.
    *
    * 4. If everything succeeded, the bridge links the provider to the given interface name in its interface map.
+   *
+   * @param interfaceName
    */
   protected async loginSilent(interfaceName: string): Promise<void> {
     if (this.interfaces.get(interfaceName)) {
@@ -205,7 +222,7 @@ export class Bridge {
 
     // Launch the stored provider.
 
-    const info = await this.launchProvider(providerMetadata.url);
+    const info = await this.launchProvider(providerMetadata.info.domain);
 
     // Try to connect without user input.
 
@@ -224,6 +241,8 @@ export class Bridge {
 
   /**
    * Logs out and destroys the loaded provider.
+   *
+   * @param interfaceName
    */
   protected async logout(interfaceName: string): Promise<void> {
     const i = this.interfaces.get(interfaceName);
@@ -260,7 +279,8 @@ export class Bridge {
   /**
    * Checks for provider stored in the bridge's local storage.
    *
-   * @returns - The provider metadata including URL and name.
+   * @param interfaceName
+   * @returns - The provider metadata including URL and name, or null if not found.
    */
   protected checkForStoredProvider(interfaceName: string): ProviderMetadata | null {
     if (!localStorage) {
@@ -301,6 +321,8 @@ export class Bridge {
 
   /**
    * Launches the iframe with the provider and establishes a connection.
+   *
+   * @param providerUrl
    */
   protected async launchProvider(providerUrl: string): Promise<ProviderInfo> {
     // TODO: Check for valid base32 providerUrl here.
@@ -334,6 +356,9 @@ export class Bridge {
 
   /**
    * Stores the current provider in the bridge's localStorage.
+   *
+   * @param interfaceName
+   * @param providerMetadata
    */
   protected saveStoredProvider(interfaceName: string, providerMetadata: ProviderMetadata): void {
     if (!localStorage) {

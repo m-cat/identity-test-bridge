@@ -16,6 +16,7 @@ module.exports = {
   },
   resolve: {
     extensions: [".tsx", ".ts", ".js"],
+    symlinks: false,
   },
   output: {
     filename: "router.js",

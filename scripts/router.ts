@@ -1,15 +1,27 @@
-import { ProviderMetadata, SkappInfo } from "skynet-interface-utils";
+import {
+  emitStorageEvent,
+  ProviderInfo,
+  ProviderMetadata,
+  SkappInfo,
+  listenForStorageEvent,
+  monitorOtherListener,
+  ensureUrl,
+} from "skynet-interface-utils";
 import urljoin from "url-join";
+
+// Start the bridge pinger in the background.
+const { promise: promisePing } = monitorOtherListener("router", "bridge", 5000);
 
 let submitted = false;
 
+let defaultProviders: Array<ProviderInfo> | undefined = undefined;
 let skappInfo: SkappInfo | undefined = undefined;
 
 // ======
 // Events
 // ======
 
-// Event that is triggered when the window is closed.
+// Event that is triggered when the window is closed by the user.
 window.onbeforeunload = () => {
   if (!submitted) {
     // Send value to signify that the router was closed.
@@ -28,6 +40,11 @@ window.onerror = function (error) {
 };
 
 window.onload = async () => {
+  // The bridge pinger should run in the background and close the router if the connection with the bridge is lost.
+  promisePing.catch(() => {
+    returnMessage("error", "Bridge timed out");
+  });
+
   // Get parameters.
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -41,10 +58,46 @@ window.onload = async () => {
     returnMessage("error", "Parameter 'skappDomain' not found");
     return;
   }
+  const defaultProvidersString = urlParams.get("defaultProviders");
+  if (!defaultProvidersString) {
+    returnMessage("error", "Parameter 'defaultProviders' not found");
+    return;
+  }
 
   // Set values.
 
+  // Parse the providers array.
+  try {
+    defaultProviders = JSON.parse(defaultProvidersString);
+  } catch (error) {
+    returnMessage("error", `Could not parse 'defaultProviders': ${error}`);
+    return;
+  }
+  if (!defaultProviders) {
+    returnMessage("error", "Parameter 'defaultProviders' was null");
+    return;
+  }
   skappInfo = { name, domain };
+
+  // Set the default providers.
+
+  const uiProviderForm = document.getElementById("provider-form")!;
+  // Add the providers in reverse order since we prepend to the form each time.
+  let i = 0;
+  for (const providerInfo of defaultProviders.reverse()) {
+    let radioHtml = `<input type="radio" name="provider-form-radio" value="${providerInfo.domain}"`;
+    if (i === defaultProviders.length) {
+      radioHtml += ' checked="checked"';
+    }
+    radioHtml += `/> <label for="identity-test-provider">${providerInfo.name}</label>`;
+
+    const radioDiv = document.createElement("div")!;
+    radioDiv.innerHTML = radioHtml;
+
+    // Add div to form.
+    uiProviderForm.prepend(radioDiv);
+    i++;
+  }
 };
 
 // ============
@@ -77,67 +130,67 @@ window.onload = async () => {
   }
 
   await handleProviderUrl(providerUrl);
-}
+};
 
+/**
+ * @param providerUrl
+ */
 async function handleProviderUrl(providerUrl: string): Promise<void> {
-  // Set up event listener for provider metadata from the bridge.
+  // Event listener that waits for provider metadata from the bridge.
+  const { promise: promiseMetadata, controller: controllerMetadata } = listenForStorageEvent("bridge-metadata");
+  // Kick off another event listener along with the first one as an error may still occur, and we need to handle that.
+  const { promise: promiseLong, controller: controllerLong } = listenForStorageEvent("bridge");
 
-  const promise: Promise<void> = new Promise((resolve, reject) => {
-    const handleEvent = async ({ key, newValue }: StorageEvent) => {
-      if (!key) {
-        reject("Storage event data not found");
-        return;
-      }
+  // eslint-disable-next-line no-async-promise-executor
+  const promise: Promise<void> = new Promise(async (resolve, reject) => {
+    // Make this promise run in the background and reject on any errors.
+    promiseLong.catch((err: string) => {
+      reject(err);
+    });
 
-      if (!["success-bridge", "error-bridge"].includes(key)) {
-        return;
-      }
-      window.removeEventListener("storage", handleEvent);
-      window.localStorage.removeItem(key);
+    // Send the provider URL to the bridge.
 
-      if (key === "success-bridge") {
-        if (!newValue) {
-          reject("Storage event data value not found");
-          return;
-        }
-        const metadata = JSON.parse(newValue);
-        await handleProviderMetadata(metadata);
-        resolve();
-      } else {
-        if (key !== "error-bridge") {
-          reject("Unknown key received");
-        }
-        reject(newValue);
-      }
-    };
+    returnMessage("success", providerUrl, true, "router-provider-url");
 
-    window.addEventListener("storage", handleEvent);
+    // Wait for provider metadata from bridge.
+
+    try {
+      const metadataJSON = await promiseMetadata;
+      const metadata = JSON.parse(metadataJSON);
+      handleProviderMetadata(metadata);
+    } catch (error) {
+      returnMessage("error", error);
+    }
+
+    resolve();
   });
 
-  // Send the value to the bridge.
+  return promise.catch((err) => {
+    // Clean up the event listeners and promises.
+    controllerMetadata.cleanup();
+    controllerLong.cleanup();
 
-  returnMessage("success", providerUrl, true);
-
-  // Wait on metadata from bridge.
-
-  await promise;
+    returnMessage("error", err);
+  });
 }
 
-async function handleProviderMetadata(metadata: ProviderMetadata): Promise<void> {
+/**
+ * @param metadata
+ */
+function handleProviderMetadata(metadata: ProviderMetadata): void {
   if (!skappInfo) {
-    returnMessage("error", "skapp info not found");
-    return;
+    throw new Error("skapp info not found");
   }
 
   // Open the connector.
 
   // Build the connector URL.
-  let connectorUrl = ensureUrl(metadata.url);
+  let connectorUrl = ensureUrl(metadata.info.domain);
   connectorUrl = urljoin(connectorUrl, metadata.relativeConnectorPath);
   connectorUrl = `${connectorUrl}?skappName=${skappInfo.name}&skappDomain=${skappInfo.domain}`;
   // Navigate to the connector.
   window.location.replace(connectorUrl);
-};
+}
 
 // ================
 // Helper Functions
@@ -157,17 +210,23 @@ export function deactivateUI() {
   document.getElementById("darkLayer")!.style.display = "";
 }
 
-function ensureUrl(url: string): string {
-  if (!url.startsWith("https://")) {
-    url = `https://${url}`;
+/**
+ * @param messageKey
+ * @param message
+ * @param stayOpen
+ * @param componentName
+ */
+function returnMessage(
+  messageKey: "success" | "event" | "error",
+  message: string,
+  stayOpen = false,
+  componentName?: string
+) {
+  let component = "router";
+  if (componentName) {
+    component = componentName;
   }
-  return url;
-}
-
-function returnMessage(messageKey: "success" | "event" | "error", message: string, stayOpen = false) {
-  const key = `${messageKey}-router`;
-  window.localStorage.removeItem(key);
-  window.localStorage.setItem(key, message);
+  emitStorageEvent(component, messageKey, message);
   if (!stayOpen) {
     window.close();
   }
