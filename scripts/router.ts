@@ -6,15 +6,16 @@ import {
   listenForStorageEvent,
   monitorOtherListener,
   ensureUrl,
+  defaultWindowTimeout,
 } from "skynet-interface-utils";
 import urljoin from "url-join";
 
 // Start the bridge pinger in the background.
-const { promise: promisePing } = monitorOtherListener("router", "bridge", 5000);
+const { promise: promisePing } = monitorOtherListener("router", "bridge", defaultWindowTimeout);
 
 let submitted = false;
 
-let defaultProviders: Array<ProviderInfo> | undefined = undefined;
+let providers: Array<ProviderInfo> | undefined = undefined;
 let skappInfo: SkappInfo | undefined = undefined;
 
 // ======
@@ -58,9 +59,9 @@ window.onload = async () => {
     returnMessage("error", "Parameter 'skappDomain' not found");
     return;
   }
-  const defaultProvidersString = urlParams.get("defaultProviders");
-  if (!defaultProvidersString) {
-    returnMessage("error", "Parameter 'defaultProviders' not found");
+  const providersString = urlParams.get("providers");
+  if (!providersString) {
+    returnMessage("error", "Parameter 'providers' not found");
     return;
   }
 
@@ -68,13 +69,13 @@ window.onload = async () => {
 
   // Parse the providers array.
   try {
-    defaultProviders = JSON.parse(defaultProvidersString);
+    providers = JSON.parse(providersString);
   } catch (error) {
-    returnMessage("error", `Could not parse 'defaultProviders': ${error}`);
+    returnMessage("error", `Could not parse 'providers': ${error}`);
     return;
   }
-  if (!defaultProviders) {
-    returnMessage("error", "Parameter 'defaultProviders' was null");
+  if (!providers) {
+    returnMessage("error", "Parameter 'providers' was null");
     return;
   }
   skappInfo = { name, domain };
@@ -84,9 +85,9 @@ window.onload = async () => {
   const uiProviderForm = document.getElementById("provider-form")!;
   // Add the providers in reverse order since we prepend to the form each time.
   let i = 0;
-  for (const providerInfo of defaultProviders.reverse()) {
+  for (const providerInfo of providers.reverse()) {
     let radioHtml = `<input type="radio" name="provider-form-radio" value="${providerInfo.domain}"`;
-    if (i === defaultProviders.length) {
+    if (i === providers.length) {
       radioHtml += ' checked="checked"';
     }
     radioHtml += `/> <label for="identity-test-provider">${providerInfo.name}</label>`;

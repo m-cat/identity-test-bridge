@@ -8,10 +8,11 @@ import {
   SkappInfo,
   listenForStorageEvent,
   monitorOtherListener,
+  defaultWindowTimeout,
+  defaultHandshakeMaxAttempts,
+  defaultHandshakeAttemptsInterval,
 } from "skynet-interface-utils";
 import { SkynetClient } from "skynet-js";
-
-import { handshakeAttemptsInterval, handshakeMaxAttempts } from "./consts";
 
 type ProviderInfo = {
   connection: Connection;
@@ -95,7 +96,7 @@ export class Bridge {
   /**
    * Loads and connects to a new provider, as opposed to a stored one, by asking the user for it.
    *
-   * 1. The gate has already launched the router and is now calling loginPopup() on the bridge.
+   * 1. The tunnel has already launched the router and is now calling loginPopup() on the bridge.
    *
    * 2. The bridge waits for the provider URL from the router.
    *
@@ -119,7 +120,11 @@ export class Bridge {
     // Kick off another event listener along with the first one as the router window may still be closed or an error may occur, and we need to handle that.
     const { promise: promiseLong, controller: controllerLong } = listenForStorageEvent("router");
     // Start the router pinger.
-    const { promise: promisePing, controller: controllerPing } = monitorOtherListener("bridge", "router", 5000);
+    const { promise: promisePing, controller: controllerPing } = monitorOtherListener(
+      "bridge",
+      "router",
+      defaultWindowTimeout
+    );
 
     // eslint-disable-next-line no-async-promise-executor
     const promise: Promise<void> = new Promise(async (resolve, reject) => {
@@ -339,7 +344,13 @@ export class Bridge {
       remoteWindow: childWindow,
       remoteOrigin: "*",
     });
-    const connection = await ParentHandshake(messenger, {}, handshakeMaxAttempts, handshakeAttemptsInterval);
+    // TODO: Get handshake values from optional fields.
+    const connection = await ParentHandshake(
+      messenger,
+      {},
+      defaultHandshakeMaxAttempts,
+      defaultHandshakeAttemptsInterval
+    );
 
     const metadata = await connection.remoteHandle().call("getProviderMetadata");
 
