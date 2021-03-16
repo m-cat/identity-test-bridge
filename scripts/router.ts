@@ -49,14 +49,9 @@ window.onload = async () => {
   // Get parameters.
 
   const urlParams = new URLSearchParams(window.location.search);
-  const name = urlParams.get("skappName");
-  if (!name) {
-    returnMessage("error", "Parameter 'skappName' not found");
-    return;
-  }
-  const domain = urlParams.get("skappDomain");
-  if (!domain) {
-    returnMessage("error", "Parameter 'skappDomain' not found");
+  const skappInfoString = urlParams.get("skappInfo");
+  if (!skappInfoString) {
+    returnMessage("error", "Parameter 'skappInfo' not found");
     return;
   }
   const providersString = urlParams.get("providers");
@@ -67,6 +62,21 @@ window.onload = async () => {
 
   // Set values.
 
+  // Parse the skappInfo object.
+  try {
+    skappInfo = JSON.parse(skappInfoString);
+  } catch (error) {
+    returnMessage("error", `Could not parse 'skappInfo': ${error}`);
+    return;
+  }
+  if (!skappInfo) {
+    returnMessage("error", "Parameter 'skappInfo' was null");
+    return;
+  }
+  // Override the domain if referrer is found.
+  if (document.referrer) {
+    skappInfo.domain = document.referrer;
+  }
   // Parse the providers array.
   try {
     providers = JSON.parse(providersString);
@@ -78,7 +88,6 @@ window.onload = async () => {
     returnMessage("error", "Parameter 'providers' was null");
     return;
   }
-  skappInfo = { name, domain };
 
   // Set the default providers.
 
@@ -186,9 +195,10 @@ function handleProviderMetadata(metadata: ProviderMetadata): void {
   // Open the connector.
 
   // Build the connector URL.
+  const skappInfoString = JSON.stringify(skappInfo);
   let connectorUrl = ensureUrl(metadata.info.domain);
   connectorUrl = urljoin(connectorUrl, metadata.relativeConnectorPath);
-  connectorUrl = `${connectorUrl}?skappName=${skappInfo.name}&skappDomain=${skappInfo.domain}`;
+  connectorUrl = `${connectorUrl}?skappInfo=${skappInfoString}`;
   // Navigate to the connector.
   window.location.replace(connectorUrl);
 }

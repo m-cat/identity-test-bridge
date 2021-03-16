@@ -12,7 +12,7 @@ import {
   defaultHandshakeMaxAttempts,
   defaultHandshakeAttemptsInterval,
 } from "skynet-interface-utils";
-import { SkynetClient } from "skynet-js";
+import { CustomConnectOptions, SkynetClient } from "skynet-js";
 
 type ProviderInfo = {
   connection: Connection;
@@ -27,21 +27,20 @@ export class Bridge {
     public bridgeMetadata: BridgeMetadata,
 
     protected client: SkynetClient,
-    protected interfaces: Map<string, ProviderInfo>,
+    protected dacs: Map<string, ProviderInfo>,
     protected parentConnection: Connection
   ) {
     // Set child methods.
 
     const methods = {
-      callInterface: async (interfaceName: string, method: string, ...args: unknown[]) =>
-        this.callInterface(interfaceName, method, args),
-      // connectPopup: async (interfaceName: string) => this.connectPopup(interfaceName),
-      // connectSilent: async (interfaceName: string) => this.connectSilent(interfaceName),
-      // disconnect: async (interfaceName: string) => this.disconnect(interfaceName),
+      call: async (dacName: string, method: string, ...args: unknown[]) => this.call(dacName, method, args),
+      // connectPopup: async (dacName: string) => this.connectPopup(dacName),
+      // connectSilent: async (dacName: string) => this.connectSilent(dacName),
+      // disconnect: async (dacName: string) => this.disconnect(dacName),
       getBridgeMetadata: async (skappInfo: SkappInfo) => this.getBridgeMetadata(skappInfo),
-      loginPopup: async (interfaceName: string) => this.loginPopup(interfaceName),
-      loginSilent: async (interfaceName: string) => this.loginSilent(interfaceName),
-      logout: async (interfaceName: string) => this.logout(interfaceName),
+      loginPopup: async (dacName: string, opts: CustomConnectOptions) => this.loginPopup(dacName, opts),
+      loginSilent: async (dacName: string) => this.loginSilent(dacName),
+      logout: async (dacName: string) => this.logout(dacName),
     };
     this.parentConnection.localHandle().setMethods(methods);
   }
@@ -61,31 +60,31 @@ export class Bridge {
     // NOTE: We set the methods in the constructor since we don't have 'this' here.
     const parentConnection = await ChildHandshake(messenger);
 
-    // Initialize an interface map.
+    // Initialize an dac map.
 
-    const interfaces = new Map();
+    const dacs = new Map();
 
     // Initialize the Skynet client.
 
     const client = new SkynetClient();
 
-    return new Bridge(bridgeMetadata, client, interfaces, parentConnection);
+    return new Bridge(bridgeMetadata, client, dacs, parentConnection);
   }
 
   // =================
   // Public Bridge API
   // =================
 
-  protected async callInterface(interfaceName: string, method: string, ...args: unknown[]): Promise<unknown> {
-    const status = this.interfaces.get(interfaceName);
+  protected async call(dacName: string, method: string, ...args: unknown[]): Promise<unknown> {
+    const status = this.dacs.get(dacName);
     if (!status) {
-      throw new Error(`Interface '${interfaceName}' not found`);
+      throw new Error(`Dac '${dacName}' not found`);
     }
     if (!status.metadata) {
-      throw new Error("Provider not connected, cannot access interface");
+      throw new Error("Provider not connected, cannot access dac");
     }
 
-    return status.connection.remoteHandle().call("callInterface", method, args);
+    return status.connection.remoteHandle().call("call", method, args);
   }
 
   protected async getBridgeMetadata(skappInfo: SkappInfo): Promise<BridgeMetadata> {
@@ -110,9 +109,10 @@ export class Bridge {
    *
    * 7. The bridge stores the provider for future logins.
    *
-   * @param interfaceName
+   * @param dacName
+   * @param _opts
    */
-  protected async loginPopup(interfaceName: string): Promise<void> {
+  protected async loginPopup(dacName: string, _opts: CustomConnectOptions): Promise<void> {
     // Event listener that waits for provider url from the router.
     const { promise: promiseProviderUrl, controller: controllerProviderUrl } = listenForStorageEvent(
       "router-provider-url"
@@ -145,8 +145,8 @@ export class Bridge {
         if (!this.skappInfo) {
           throw new Error("getBridgeMetadata() with skappInfo was not called");
         }
-        if (this.interfaces.get(interfaceName)) {
-          throw new Error(`Interface '${interfaceName}' already loaded`);
+        if (this.dacs.get(dacName)) {
+          throw new Error(`Dac '${dacName}' already loaded`);
         }
 
         // Wait for provider URL from router.
@@ -177,8 +177,8 @@ export class Bridge {
         controllerPing.cleanup();
 
         await info.connection.remoteHandle().call("connectPopup", this.skappInfo);
-        this.setProviderConnected(interfaceName, info);
-        this.saveStoredProvider(interfaceName, info.metadata);
+        this.setProviderConnected(dacName, info);
+        this.saveStoredProvider(dacName, info.metadata);
       } catch (err) {
         reject(new Error(`Could not login with user input: ${err}`));
         return;
@@ -209,20 +209,20 @@ export class Bridge {
    *
    * 3. The bridge then calls connectSilent() on the provider.
    *
-   * 4. If everything succeeded, the bridge links the provider to the given interface name in its interface map.
+   * 4. If everything succeeded, the bridge links the provider to the given dac name in its dac map.
    *
-   * @param interfaceName
+   * @param dacName
    */
-  protected async loginSilent(interfaceName: string): Promise<void> {
-    if (this.interfaces.get(interfaceName)) {
-      throw new Error(`Interface '${interfaceName}' already loaded`);
+  protected async loginSilent(dacName: string): Promise<void> {
+    if (this.dacs.get(dacName)) {
+      throw new Error(`Dac '${dacName}' already loaded`);
     }
 
     // Check for stored provider.
 
-    const providerMetadata = this.checkForStoredProvider(interfaceName);
+    const providerMetadata = this.checkForStoredProvider(dacName);
     if (!providerMetadata) {
-      throw new Error(`Stored provider for interface '${interfaceName}' not found`);
+      throw new Error(`Stored provider for dac '${dacName}' not found`);
     }
 
     // Launch the stored provider.
@@ -237,7 +237,7 @@ export class Bridge {
       // Try to connect to stored provider.
 
       await info.connection.remoteHandle().call("connectSilent", this.skappInfo);
-      this.setProviderConnected(interfaceName, info);
+      this.setProviderConnected(dacName, info);
     } catch (error) {
       // TODO: Unload provider if launched.
       throw new Error("Could not login silently");
@@ -247,12 +247,12 @@ export class Bridge {
   /**
    * Logs out and destroys the loaded provider.
    *
-   * @param interfaceName
+   * @param dacName
    */
-  protected async logout(interfaceName: string): Promise<void> {
-    const i = this.interfaces.get(interfaceName);
+  protected async logout(dacName: string): Promise<void> {
+    const i = this.dacs.get(dacName);
     if (!i) {
-      throw new Error(`Interface '${interfaceName}' already loaded`);
+      throw new Error(`Dac '${dacName}' already loaded`);
     }
 
     // Disconnect provider.
@@ -263,11 +263,11 @@ export class Bridge {
       // Provider errored while disconnecting. Log the error and move on.
       console.log(error);
     }
-    this.setProviderDisconnected(interfaceName);
+    this.setProviderDisconnected(dacName);
 
     // Clear stored provider.
 
-    this.clearStoredProvider(interfaceName);
+    this.clearStoredProvider(dacName);
 
     // Close the child iframe.
 
@@ -284,16 +284,16 @@ export class Bridge {
   /**
    * Checks for provider stored in the bridge's local storage.
    *
-   * @param interfaceName
+   * @param dacName
    * @returns - The provider metadata including URL and name, or null if not found.
    */
-  protected checkForStoredProvider(interfaceName: string): ProviderMetadata | null {
+  protected checkForStoredProvider(dacName: string): ProviderMetadata | null {
     if (!localStorage) {
       console.log("WARNING: localStorage disabled");
       return null;
     }
 
-    const metadata = localStorage.getItem(this.interfaceStorageKey(interfaceName));
+    const metadata = localStorage.getItem(this.dacStorageKey(dacName));
     if (!metadata) {
       return null;
     }
@@ -301,13 +301,13 @@ export class Bridge {
     return result;
   }
 
-  protected clearStoredProvider(interfaceName: string): void {
+  protected clearStoredProvider(dacName: string): void {
     if (!localStorage) {
       console.log("WARNING: localStorage disabled");
       return;
     }
 
-    localStorage.removeItem(this.interfaceStorageKey(interfaceName));
+    localStorage.removeItem(this.dacStorageKey(dacName));
   }
 
   protected formatProviderUrl(providerUrl: string): string {
@@ -320,8 +320,8 @@ export class Bridge {
     return providerUrl;
   }
 
-  protected interfaceStorageKey(interfaceName: string): string {
-    return `interface:${interfaceName}`;
+  protected dacStorageKey(dacName: string): string {
+    return `dac:${dacName}`;
   }
 
   /**
@@ -357,26 +357,26 @@ export class Bridge {
     return { connection, metadata, childFrame };
   }
 
-  protected setProviderConnected(interfaceName: string, info: ProviderInfo): void {
-    this.interfaces.set(interfaceName, info);
+  protected setProviderConnected(dacName: string, info: ProviderInfo): void {
+    this.dacs.set(dacName, info);
   }
 
-  protected setProviderDisconnected(interfaceName: string): void {
-    this.interfaces.delete(interfaceName);
+  protected setProviderDisconnected(dacName: string): void {
+    this.dacs.delete(dacName);
   }
 
   /**
    * Stores the current provider in the bridge's localStorage.
    *
-   * @param interfaceName
+   * @param dacName
    * @param providerMetadata
    */
-  protected saveStoredProvider(interfaceName: string, providerMetadata: ProviderMetadata): void {
+  protected saveStoredProvider(dacName: string, providerMetadata: ProviderMetadata): void {
     if (!localStorage) {
       console.log("WARNING: localStorage disabled, provider not stored");
       return;
     }
 
-    localStorage.setItem(this.interfaceStorageKey(interfaceName), JSON.stringify(providerMetadata));
+    localStorage.setItem(this.dacStorageKey(dacName), JSON.stringify(providerMetadata));
   }
 }
