@@ -33,7 +33,7 @@ export class Bridge {
     // Set child methods.
 
     const methods = {
-      call: async (dacName: string, method: string, ...args: unknown[]) => this.call(dacName, method, args),
+      call: async (dacName: string, method: string, ...args: unknown[]) => this.call(dacName, method, ...args),
       // connectPopup: async (dacName: string) => this.connectPopup(dacName),
       // connectSilent: async (dacName: string) => this.connectSilent(dacName),
       // disconnect: async (dacName: string) => this.disconnect(dacName),
@@ -84,7 +84,7 @@ export class Bridge {
       throw new Error("Provider not connected, cannot access dac");
     }
 
-    return status.connection.remoteHandle().call("call", method, args);
+    return status.connection.remoteHandle().call("call", method, ...args);
   }
 
   protected async getBridgeMetadata(skappInfo: SkappInfo): Promise<BridgeMetadata> {
